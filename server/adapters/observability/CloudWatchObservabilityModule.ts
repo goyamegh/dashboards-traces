@@ -120,22 +120,35 @@ export function buildTracesInsightsQuery(options: TracesQueryOptions, useUnion: 
   return parts.join(' | ');
 }
 
-/** Insights query fetching every span of the given runs (metrics batch path). */
-export function buildRunSpansInsightsQuery(runIds: string[]): string {
-  return [
-    'fields @message',
-    `filter ${inList('attributes.agent_health.run.id', runIds)} or ${inList('attributes.gen_ai.conversation.id', runIds)}`,
-    'sort startTimeUnixNano asc',
-    'limit 10000',
-  ].join(' | ');
-}
-
 /** FilterLogEvents JSON pattern for an exact traceId match. */
 export function traceIdFilterPattern(traceId: string): string {
   return `{ $.traceId = ${JSON.stringify(traceId)} }`;
 }
 
-const TRACE_ID_RE = /^[0-9a-f]{32}$/i;
+/** Ids safe to use as quoted FilterLogEvents terms (no quotes / whitespace / control chars). */
+const SAFE_TERM_RE = /^[^\s"\\\x00-\x1f]{1,256}$/;
+
+/**
+ * FilterLogEvents term pattern matching any event that contains one of the
+ * ids (`?"a" ?"b"` = OR). Attribute keys with dots (`agent_health.run.id`)
+ * cannot be addressed by JSON patterns, so we match the value anywhere in the
+ * record and let `matchesQuery` enforce the exact attribute in memory.
+ */
+export function idTermsFilterPattern(ids: string[]): string | null {
+  const terms = [...new Set(ids.filter((v) => typeof v === 'string' && SAFE_TERM_RE.test(v)))];
+  if (terms.length === 0) return null;
+  return terms.length === 1 ? JSON.stringify(terms[0]) : terms.map((t) => `?${JSON.stringify(t)}`).join(' ');
+}
+
+/** Every exact correlator on a request: traceId (A), runIds (B), sessionIds (D). */
+export function exactCorrelatorIds(options: TracesQueryOptions): string[] {
+  const ids: string[] = [];
+  if (options.traceId) ids.push(options.traceId);
+  for (const r of options.runIds || []) if (r) ids.push(r);
+  if (options.sessionId) ids.push(options.sessionId);
+  for (const a of options.agents || []) if (a.sessionId) ids.push(a.sessionId);
+  return ids;
+}
 
 // ----------------------------------------------------------------------------
 // Pagination (offset cursor, same scheme as the file backend)
@@ -163,44 +176,70 @@ class CloudWatchTracesOperations implements ITracesOperations {
     private readonly lookbackMs: number
   ) {}
 
-  private window(options: Pick<TracesQueryOptions, 'startTime' | 'endTime'>): { startMs: number; endMs: number } {
+  /**
+   * Scan window: explicit bounds win; otherwise the union of the agents' run
+   * windows (±5 min for clock skew — a run's spans cannot fall outside its own
+   * wall-clock window); otherwise the configured lookback.
+   */
+  window(options: Pick<TracesQueryOptions, 'startTime' | 'endTime' | 'agents'>): { startMs: number; endMs: number } {
     const now = Date.now();
-    const endMs = options.endTime ? toMs(options.endTime) : now;
-    const startMs = options.startTime ? toMs(options.startTime) : endMs - this.lookbackMs;
-    return { startMs, endMs };
+    if (options.startTime || options.endTime) {
+      const endMs = options.endTime ? toMs(options.endTime) : now;
+      const startMs = options.startTime ? toMs(options.startTime) : endMs - this.lookbackMs;
+      return { startMs, endMs };
+    }
+    const windows = (options.agents || []).filter((a) => Number.isFinite(a.startedAt) && Number.isFinite(a.endedAt));
+    if (windows.length > 0) {
+      const PAD = 5 * 60 * 1000;
+      return {
+        startMs: Math.min(...windows.map((a) => a.startedAt)) - PAD,
+        endMs: Math.min(now, Math.max(...windows.map((a) => a.endedAt)) + PAD),
+      };
+    }
+    return { startMs: now - this.lookbackMs, endMs: now };
   }
 
-  /** Fetch raw span sources for a request (before in-memory matching). */
+  /**
+   * Fetch raw span sources for a request (before in-memory matching).
+   *
+   * Exact ids (traceId / runIds / sessionIds) go through FilterLogEvents —
+   * synchronous and visible within seconds of ingestion, whereas Logs
+   * Insights indexes `aws/spans` with a lag of up to several minutes (a fresh
+   * run would otherwise show an empty Traces tab and zero metrics). Insights
+   * is used only for what FilterLogEvents cannot express — service-name +
+   * time-window (Strategy C) and free-text search — or when the bounded scan
+   * did not cover the window. Both result sets are unioned; `matchesQuery`
+   * then applies the exact predicate.
+   */
   async fetchSources(options: TracesQueryOptions, useUnion: boolean): Promise<OpenSearchSpanSource[]> {
-    const { traceId, runIds, sessionId, agents, textSearch } = options;
-    const onlyTraceId =
-      !!traceId && TRACE_ID_RE.test(traceId) &&
-      !(runIds && runIds.some(Boolean)) && !sessionId && !(agents && agents.length > 0) && !textSearch;
-
+    const { agents, textSearch } = options;
     const { startMs, endMs } = this.window(options);
-    let messages: string[] | undefined;
-    if (onlyTraceId) {
-      // Fast path: synchronous, no Insights indexing lag. Bounded scan — on a
-      // large aws/spans group we fall through to the indexed Insights query.
-      const res = await this.reader.filterEvents({
-        logGroup: this.logGroup,
-        pattern: traceIdFilterPattern(traceId!),
-        startMs,
-        endMs,
-        limit: 10_000,
-      });
-      if (res.complete || res.events.length > 0) messages = res.events.map((e) => e.message);
+    const messages: string[] = [];
+
+    const exactPattern = idTermsFilterPattern(exactCorrelatorIds(options));
+    let exactComplete = false;
+    if (exactPattern) {
+      const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern: exactPattern, startMs, endMs, limit: 10_000 });
+      messages.push(...res.events.map((e) => e.message));
+      exactComplete = res.complete;
+      debug('CloudWatchTraces', `FilterLogEvents(${exactPattern}) → ${res.events.length} records, complete=${res.complete}`);
     }
-    if (messages === undefined) {
+
+    const needsWindow = !!(agents && agents.length > 0) || !!(textSearch && textSearch.trim());
+    const noExact = !exactPattern;
+    // With union semantics a window clause can only ADD spans; skip the slower
+    // Insights round-trip when the exact ids already found this run's spans.
+    const windowStillNeeded = needsWindow && (!useUnion || messages.length === 0);
+    if (noExact || windowStillNeeded || (exactPattern && !exactComplete)) {
       const rows = await this.reader.insights({
         logGroups: [this.logGroup],
         query: buildTracesInsightsQuery(options, useUnion),
         startMs,
         endMs,
       });
-      messages = rows.map((r) => r['@message']).filter((m): m is string => typeof m === 'string');
+      messages.push(...rows.map((r) => r['@message']).filter((m): m is string => typeof m === 'string'));
+      debug('CloudWatchTraces', `Insights → ${rows.length} records`);
     }
-    debug('CloudWatchTraces', `fetched ${messages.length} span records`);
 
     const sources: OpenSearchSpanSource[] = [];
     for (const m of messages) {
@@ -311,12 +350,17 @@ class CloudWatchLogsOperations implements ILogsOperations {
 // ----------------------------------------------------------------------------
 
 class CloudWatchMetricsOperations implements IMetricsOperations {
-  constructor(private readonly traces: CloudWatchTracesOperations, private readonly reader: ICloudWatchReader, private readonly logGroup: string, private readonly lookbackMs: number) {}
+  constructor(private readonly traces: CloudWatchTracesOperations) {}
 
   async forRun(runId: string): Promise<MetricsResult> {
     return (await this.forRuns([runId]))[0];
   }
 
+  /**
+   * Spans for the chunk are fetched through the traces fast path (FilterLogEvents
+   * on the run ids, Insights fallback) and grouped by `agent_health.run.id` /
+   * `gen_ai.conversation.id` before the shared metrics math.
+   */
   async forRuns(runIds: string[]): Promise<MetricsResult[]> {
     const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
     if (valid.length === 0) return [];
@@ -327,17 +371,11 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
       const byRun = new Map<string, OpenSearchSpanSource[]>();
       for (const id of chunk) byRun.set(id, []);
       try {
-        const now = Date.now();
-        const rows = await this.reader.insights({
-          logGroups: [this.logGroup],
-          query: buildRunSpansInsightsQuery(chunk),
-          startMs: now - this.lookbackMs,
-          endMs: now,
-        });
-        for (const r of rows) {
-          const rec = parseSpanRecord(r['@message'] || '');
-          if (!rec) continue;
-          const src = cloudWatchSpanToSource(rec);
+        const sources = await this.traces.fetchSources({ runIds: chunk }, false);
+        const seen = new Set<string>();
+        for (const src of sources) {
+          if (src.spanId && seen.has(src.spanId)) continue;
+          if (src.spanId) seen.add(src.spanId);
           const a = src.attributes || {};
           const rid = [a['agent_health.run.id'], a['gen_ai.conversation.id']].find((v) => typeof v === 'string' && byRun.has(v)) as string | undefined;
           if (rid) byRun.get(rid)!.push(src);
@@ -375,7 +413,7 @@ export class CloudWatchObservabilityModule implements IObservabilityModule {
     const traces = new CloudWatchTracesOperations(this.reader, this.logGroups.traces, lookbackMs);
     this.traces = traces;
     this.logs = new CloudWatchLogsOperations(this.reader, this.logGroups.logs, lookbackMs);
-    this.metrics = new CloudWatchMetricsOperations(traces, this.reader, this.logGroups.traces, lookbackMs);
+    this.metrics = new CloudWatchMetricsOperations(traces);
   }
 
   async health(): Promise<HealthStatus> {

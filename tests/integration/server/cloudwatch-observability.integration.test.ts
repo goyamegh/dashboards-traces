@@ -46,9 +46,9 @@ function fakeSend(command: any): any {
     const msgs = groups[input.logGroupName];
     if (!msgs) throw Object.assign(new Error('The specified log group does not exist.'), { name: 'ResourceNotFoundException' });
     const m = /\{ \$\.traceId = "([0-9a-f]+)" \}/.exec(input.filterPattern || '');
-    const term = !m && input.filterPattern ? JSON.parse(input.filterPattern) : null;
+    const terms = !m && input.filterPattern ? [...(input.filterPattern as string).matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => JSON.parse(`"${x[1]}"`)) : [];
     const events = msgs
-      .filter((s) => (m ? JSON.parse(s).traceId === m[1] : term ? s.includes(term) : true))
+      .filter((s) => (m ? JSON.parse(s).traceId === m[1] : terms.length ? terms.some((t: string) => s.includes(t)) : true))
       .map((s) => ({ message: s, timestamp: 1788467284282, logStreamName: 'default' }));
     return { events };
   }
@@ -127,11 +127,11 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(root.attributes['service.name']).toBe(SERVICE);
     expect(root.attributes['agent_health.run.id']).toBe(RUN);
     const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
-    expect(filter.input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `{ $.traceId = "${TRACE}" }` });
+    expect(filter.input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `"${TRACE}"` });
     expect(sent.some((c) => c instanceof StartQueryCommand)).toBe(false);
   });
 
-  it('POST /api/traces in the run-report shape (traceId + runIds + agents) unions via Logs Insights', async () => {
+  it('POST /api/traces in the run-report shape (traceId + runIds + agents) resolves on exact ids without Insights', async () => {
     const res = await request(app).post('/api/traces').send({
       traceId: 'f'.repeat(32),
       runIds: [RUN],
@@ -140,9 +140,20 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(12);
+    const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
+    expect(filter.input.filterPattern).toBe(`?"${'f'.repeat(32)}" ?"${RUN}"`);
+    expect(sent.some((c) => c instanceof StartQueryCommand)).toBe(false);
+  });
+
+  it('POST /api/traces with only a service window (Strategy C) goes through Logs Insights', async () => {
+    const res = await request(app).post('/api/traces').send({
+      agents: [{ serviceName: SERVICE, startedAt: 1788467284000, endedAt: 1788467300000 }],
+      size: 1000,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(12);
     const start = sent.find((c) => c instanceof StartQueryCommand);
     expect(start.input.logGroupNames).toEqual(['aws/spans']);
-    expect(start.input.queryString).toContain(`"${RUN}"`);
     expect(start.input.queryString).toContain(`\`resource.attributes.service.name\` = "${SERVICE}"`);
     expect(sent.some((c) => c instanceof GetQueryResultsCommand)).toBe(true);
   });

@@ -6,8 +6,9 @@
 import {
   CloudWatchObservabilityModule,
   buildTracesInsightsQuery,
-  buildRunSpansInsightsQuery,
   traceIdFilterPattern,
+  idTermsFilterPattern,
+  exactCorrelatorIds,
   q,
 } from '@/server/adapters/observability/CloudWatchObservabilityModule';
 import type { ICloudWatchReader, FilterEventsResult, InsightsRow } from '@/server/adapters/observability/cloudwatch/CloudWatchReader';
@@ -52,11 +53,11 @@ class FakeReader implements ICloudWatchReader {
       throw err;
     }
     if (this.incompleteFilter) return { events: [], complete: false };
-    // Emulate the JSON metric-filter `{ $.traceId = "X" }` and quoted-term patterns.
+    // Emulate the JSON metric-filter `{ $.traceId = "X" }` and quoted-term patterns (`"a"`, `?"a" ?"b"`).
     const m = /\{ \$\.traceId = "([0-9a-f]+)" \}/.exec(opts.pattern);
-    const term = !m && opts.pattern ? JSON.parse(opts.pattern) : null;
+    const terms = !m && opts.pattern ? [...opts.pattern.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => JSON.parse(`"${x[1]}"`)) : [];
     const events = msgs
-      .filter((s) => (m ? JSON.parse(s).traceId === m[1] : term ? s.includes(term) : true))
+      .filter((s) => (m ? JSON.parse(s).traceId === m[1] : terms.length ? terms.some((t) => s.includes(t)) : true))
       .map((s) => ({ message: s, timestamp: T0_MS }));
     return { events: events.slice(0, opts.limit), complete: true };
   }
@@ -196,11 +197,18 @@ describe('Logs Insights query builder', () => {
     expect(intersect).not.toContain(' or (`attributes.agent_health.run.id`');
   });
 
-  it('builds a time-only browse query and the batch run-span query', () => {
+  it('builds a time-only browse query', () => {
     const browse = buildTracesInsightsQuery({ startTime: 1000, endTime: 2000 }, false);
     expect(browse).toBe('fields @message | filter startTimeUnixNano >= 1000000000 and startTimeUnixNano <= 2000000000 | sort startTimeUnixNano desc | limit 10000');
-    expect(buildRunSpansInsightsQuery(['a', 'b'])).toContain('`attributes.agent_health.run.id` in ["a", "b"] or `attributes.gen_ai.conversation.id` in ["a", "b"]');
     expect(traceIdFilterPattern(TRACE)).toBe(`{ $.traceId = "${TRACE}" }`);
+  });
+
+  it('builds FilterLogEvents term patterns from every exact correlator and rejects unsafe ids', () => {
+    expect(idTermsFilterPattern(['a'])).toBe('"a"');
+    expect(idTermsFilterPattern(['a', 'b', 'a'])).toBe('?"a" ?"b"');
+    expect(idTermsFilterPattern(['has space', 'has"quote', ''])).toBeNull();
+    expect(exactCorrelatorIds({ traceId: 't', runIds: ['r', ''], sessionId: 's', agents: [{ serviceName: 'x', startedAt: 0, endedAt: 1, sessionId: 'as' }] })).toEqual(['t', 'r', 's', 'as']);
+    expect(exactCorrelatorIds({ startTime: 1 })).toEqual([]);
   });
 });
 
@@ -219,7 +227,7 @@ describe('CloudWatchObservabilityModule', () => {
       const res = await mod(reader).traces.query({ traceId: TRACE, size: 100 });
       expect(reader.calls.filter).toHaveLength(1);
       expect(reader.calls.insights).toHaveLength(0);
-      expect(reader.calls.filter[0]).toMatchObject({ logGroup: 'aws/spans', pattern: traceIdFilterPattern(TRACE) });
+      expect(reader.calls.filter[0]).toMatchObject({ logGroup: 'aws/spans', pattern: `"${TRACE}"` });
       expect(res.total).toBe(12);
       expect(res.spans).toHaveLength(12);
       expect(res.hasMore).toBe(false);
@@ -241,20 +249,34 @@ describe('CloudWatchObservabilityModule', () => {
       expect(res.total).toBe(12);
     });
 
-    it('run-report shape (traceId + runIds + agents) goes through Insights with union semantics', async () => {
+    it('run-report shape (traceId + runIds + agents): exact ids via FilterLogEvents first, Insights skipped when they hit', async () => {
       const res = await mod(reader).traces.query({
         traceId: 'f'.repeat(32), // trace id that matches nothing …
         runIds: [RUN], // … but Strategy B does
         agents: [{ serviceName: 'other-service', startedAt: 0, endedAt: 1 }],
         size: 1000,
       });
+      expect(reader.calls.filter).toHaveLength(1);
+      expect(reader.calls.filter[0].pattern).toBe(`?"${'f'.repeat(32)}" ?"${RUN}"`);
+      expect(reader.calls.insights).toHaveLength(0); // precise ids found the run → no window round-trip
+      expect(res.total).toBe(12);
+    });
+
+    it('run-report shape falls through to the Insights window when the exact ids find nothing (Strategy C only agent)', async () => {
+      const res = await mod(reader).traces.query({
+        traceId: 'f'.repeat(32),
+        runIds: ['unknown-run'],
+        agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }],
+      });
+      expect(reader.calls.filter).toHaveLength(1);
       expect(reader.calls.insights).toHaveLength(1);
-      expect(reader.calls.insights[0].query).toContain(`"${RUN}"`);
+      expect(reader.calls.insights[0].query).toContain(`\`resource.attributes.service.name\` = "${SERVICE}"`);
       expect(res.total).toBe(12);
     });
 
     it('Strategy C: service.name + window matches; outside the window nothing matches', async () => {
       const inWindow = await mod(reader).traces.query({ agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] });
+      expect(reader.calls.filter).toHaveLength(0); // no exact ids → Insights only
       expect(inWindow.total).toBe(12);
       const outside = await mod(reader).traces.query({ agents: [{ serviceName: SERVICE, startedAt: T0_MS + 120_000, endedAt: T0_MS + 180_000 }] });
       expect(outside.total).toBe(0);
@@ -266,7 +288,30 @@ describe('CloudWatchObservabilityModule', () => {
       const wrongService = await mod(reader).traces.query({ traceId: TRACE, serviceName: 'someone-else' });
       expect(wrongService.total).toBe(0);
       const text = await mod(reader).traces.query({ traceId: TRACE, textSearch: 'run_query' });
+      expect(reader.calls.insights.length).toBeGreaterThan(0); // free text needs Insights
       expect(text.spans.map((s) => s.name)).toEqual(['execute_tool run_query']);
+      // A pasted trace id in the search box matches the whole trace (Agent Traces page keyword search).
+      const byId = await mod(reader).traces.query({ startTime: T0_MS - 60_000, endTime: T0_MS + 60_000, textSearch: TRACE.slice(0, 12) });
+      expect(byId.total).toBe(12);
+    });
+
+    it('a term hit on an unrelated record is filtered out by the exact predicate', async () => {
+      // A span whose tool result merely CONTAINS the run id string must not correlate.
+      const decoy = { ...records[0], traceId: 'd'.repeat(32), spanId: 'decoy000decoy000', attributes: { 'gen_ai.tool.call.result': `mentions ${RUN} in text`, 'agent_health.run.id': 'someone-else' } };
+      reader.groups['aws/spans'] = [...spanMessages, JSON.stringify(decoy)];
+      const res = await mod(reader).traces.query({ runIds: [RUN] });
+      expect(res.total).toBe(12);
+      expect(res.spans.some((s) => s.spanId === 'decoy000decoy000')).toBe(false);
+    });
+
+    it('scans only the agents\' run window (±5 min) when no explicit bounds are given', async () => {
+      await mod(reader).traces.query({ traceId: TRACE, agents: [{ serviceName: SERVICE, startedAt: T0_MS, endedAt: T0_MS + 12_000 }] });
+      const call = reader.calls.filter[0];
+      expect(call.startMs).toBe(T0_MS - 5 * 60 * 1000);
+      expect(call.endMs).toBe(T0_MS + 12_000 + 5 * 60 * 1000);
+      // explicit bounds win over the agents window
+      await mod(reader).traces.query({ traceId: TRACE, startTime: 1000, endTime: 2000, agents: [{ serviceName: SERVICE, startedAt: T0_MS, endedAt: T0_MS + 12_000 }] });
+      expect(reader.calls.filter[1]).toMatchObject({ startMs: 1000, endMs: 2000 });
     });
 
     it('paginates with an offset cursor', async () => {
@@ -347,10 +392,18 @@ describe('CloudWatchObservabilityModule', () => {
   });
 
   describe('metrics', () => {
-    it('forRun fetches the run spans through Insights and applies the shared math (no double count)', async () => {
+    it('forRun fetches the run spans through the FilterLogEvents fast path and applies the shared math (no double count)', async () => {
       const m = await mod(reader).metrics.forRun(RUN);
-      expect(reader.calls.insights[0].query).toBe(buildRunSpansInsightsQuery([RUN]));
+      expect(reader.calls.filter[0].pattern).toBe(`"${RUN}"`);
+      expect(reader.calls.insights).toHaveLength(0);
       expect(m).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 21476, outputTokens: 843, llmCalls: 3, toolCalls: 3, status: 'success' });
+    });
+
+    it('forRuns falls back to Insights when the bounded FilterLogEvents scan is incomplete', async () => {
+      reader.incompleteFilter = true;
+      const m = await mod(reader).metrics.forRun(RUN);
+      expect(reader.calls.insights).toHaveLength(1);
+      expect(m.totalTokens).toBe(22319);
     });
 
     it('forRuns groups spans per run and returns empty metrics for unknown runs', async () => {
@@ -360,7 +413,8 @@ describe('CloudWatchObservabilityModule', () => {
       expect(await mod(reader).metrics.forRuns([])).toEqual([]);
     });
 
-    it('a failing Insights query degrades to empty metrics instead of throwing', async () => {
+    it('a failing query degrades to empty metrics instead of throwing', async () => {
+      reader.incompleteFilter = true;
       reader.failInsights = new Error('ThrottlingException');
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const [m] = await mod(reader).metrics.forRuns([RUN]);
