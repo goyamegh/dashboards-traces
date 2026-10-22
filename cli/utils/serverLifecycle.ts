@@ -15,7 +15,8 @@
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import net from 'net';
 import path from 'path';
-import { readFileSync } from 'fs';
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync } from 'fs';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import type { ResolvedServerConfig } from '@/lib/config/types.js';
@@ -213,21 +214,35 @@ export async function killServerOnPort(port: number): Promise<void> {
   }
 }
 
-/**
- * Wait for server to be ready on port
- */
-async function waitForServer(port: number, timeout: number): Promise<boolean> {
-  const startTime = Date.now();
-  const pollInterval = 500;
-
-  while (Date.now() - startTime < timeout) {
-    if (await isServerRunning(port)) {
-      return true;
-    }
-    await new Promise((r) => setTimeout(r, pollInterval));
+/** Read only the end of a startup log; a noisy child must not exhaust CLI memory. */
+function readLogTail(logPath: string): string {
+  const fd = openSync(logPath, 'r');
+  try {
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(size, 64 * 1024));
+    const bytes = readSync(fd, buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+    return buffer.toString('utf8', 0, bytes);
+  } finally {
+    closeSync(fd);
   }
+}
 
-  return false;
+function openServerLog(port: number): { logPath: string; logFd: number } {
+  const name = `server-${port}-${Date.now()}-${process.pid}.log`;
+  const openIn = (directory: string) => {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const logPath = join(directory, name);
+    return { logPath, logFd: openSync(logPath, 'wx', 0o600) };
+  };
+  try {
+    return openIn(join(process.cwd(), '.agent-health', 'logs'));
+  } catch {
+    // A read-only checkout must not prevent a CLI command from starting. An
+    // atomically-created private directory avoids trusting a pre-existing path
+    // in shared /tmp; include the user id for attribution, not authorization.
+    const privateDir = mkdtempSync(join(tmpdir(), `agent-health-${process.getuid?.() ?? 'user'}-`));
+    return openIn(join(privateDir, 'logs'));
+  }
 }
 
 interface StartServerResult {
@@ -236,113 +251,101 @@ interface StartServerResult {
 }
 
 /**
- * Start the Agent Health server.
- * Parses stdout to detect the actual port (which may differ from the
- * requested port if auto-increment kicked in on EADDRINUSE).
+ * Start a persistent server with file-backed output, not pipes owned by the CLI.
+ * The short-lived IPC channel reports the actual bound port, then disconnects.
+ * Neither the child handle nor its output may keep the calling command alive.
  */
 export async function startServer(
   port: number,
   timeout: number
 ): Promise<StartServerResult> {
-  const packageRoot = join(__dirname, '..', '..');
-  const cliPath = join(packageRoot, 'bin', 'cli.js');
-  const child = spawn('node', [cliPath, 'serve', '-p', String(port), '--no-browser'], {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-    },
-  });
-
-  let stderrOutput = '';
-  let stdoutOutput = '';
-
-  // Wait for the child to print its actual port before health-checking.
-  // The server prints "Backend Server running on http://0.0.0.0:XXXX",
-  // which may differ from the requested port due to auto-increment.
-  let resolvePortDetection: (port: number) => void;
-  const portDetected = new Promise<number>((resolve) => {
-    resolvePortDetection = resolve;
-  });
-
-  child.stderr?.on('data', (data: Buffer) => {
-    stderrOutput += data.toString();
-  });
-  child.stdout?.on('data', (data: Buffer) => {
-    const chunk = data.toString();
-    stdoutOutput += chunk;
-    const match = chunk.match(/Backend Server running on http:\/\/0\.0\.0\.0:(\d+)/);
-    if (match) {
-      resolvePortDetection(parseInt(match[1], 10));
-    }
-  });
-
-  let earlyExit = false;
-  let exitCode: number | null = null;
-  child.on('exit', (code) => {
-    earlyExit = true;
-    exitCode = code;
-    // If the child exits before printing a port, fall back to the requested port
-    resolvePortDetection(port);
-  });
-
+  const cliPath = join(__dirname, '..', '..', 'bin', 'cli.js');
+  const { logPath, logFd } = openServerLog(port);
+  console.error(`[ServerLifecycle] Server log: ${logPath}`);
+  let child: ChildProcess;
+  try {
+    child = spawn(process.execPath, [cliPath, 'serve', '-p', String(port), '--no-browser'], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd, 'ipc'],
+      env: { ...process.env },
+    });
+  } finally {
+    // The child has its own copies. Closing ours does not close its log output.
+    closeSync(logFd);
+  }
   child.unref();
 
-  // Wait for either: port detected from stdout, child exit, or timeout
-  const portDetectionTimeout = Math.min(timeout, 10000);
-  const actualPort = await Promise.race([
-    portDetected,
-    new Promise<number>((resolve) => setTimeout(() => resolve(port), portDetectionTimeout)),
-  ]);
-
-  const ready = await waitForServer(actualPort, timeout);
-
-  if (!ready) {
+  try {
+    const actualPort = await new Promise<number>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        child.removeListener('message', onMessage);
+        child.removeListener('error', onError);
+        child.removeListener('exit', onExit);
+      };
+      const onMessage = (message: unknown) => {
+        const ready = message as { type?: string; port?: number } | null;
+        if (ready?.type !== 'agent-health:server-ready' ||
+            !Number.isInteger(ready.port) || ready.port! < 1 || ready.port! > 65535) return;
+        cleanup();
+        resolve(ready.port!);
+      };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        cleanup();
+        reject(new Error(`Server process exited before becoming ready (code ${code}, signal ${signal})`));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Server failed to start within ${timeout}ms on port ${port}`));
+      }, timeout);
+      child.on('message', onMessage);
+      child.on('error', onError);
+      child.on('exit', onExit);
+    });
+    return { child, actualPort };
+  } catch (error) {
+    // Startup failed; kill only the exact child we created, never a port owner.
+    child.kill('SIGKILL');
+    console.error(`[ServerLifecycle] Server log: ${logPath}`);
     try {
-      child.kill();
+      const output = readLogTail(logPath);
+      if (output) console.error(`[ServerLifecycle] Server output (last 64 KiB):\n${output}`);
     } catch {
-      // Ignore kill errors
+      // Preserve the startup error even if its log is no longer readable.
     }
-
-    if (earlyExit) {
-      console.error(`[ServerLifecycle] Server process exited with code ${exitCode} before becoming ready`);
-    } else {
-      console.error(`[ServerLifecycle] Server process did not respond to health checks within ${timeout}ms`);
-    }
-    if (stderrOutput) {
-      console.error(`[ServerLifecycle] Server stderr:\n${stderrOutput}`);
-    }
-    if (stdoutOutput) {
-      console.error(`[ServerLifecycle] Server stdout:\n${stdoutOutput}`);
-    }
-    if (!stderrOutput && !stdoutOutput) {
-      console.error(`[ServerLifecycle] No output captured from server process`);
-      console.error(`[ServerLifecycle] CLI path: ${cliPath}`);
-      console.error(`[ServerLifecycle] Package root: ${packageRoot}`);
-    }
-    throw new Error(`Server failed to start within ${timeout}ms on port ${port}`);
+    throw error;
+  } finally {
+    if (child.connected) child.disconnect();
   }
-
-  return { child, actualPort };
 }
 
 /**
  * Stop a server process
  */
-export function stopServer(process: ChildProcess): void {
-  try {
-    // Kill the process group (negative PID)
-    if (process.pid) {
-      // On Unix, kill the process group
-      try {
-        process.kill('SIGTERM');
-      } catch {
-        // Process may already be dead
-      }
-    }
-  } catch {
-    // Ignore errors during cleanup
-  }
+export function stopServer(child: ChildProcess): void {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+
+  // Preserve the synchronous cleanup API, but keep Node alive until this exact
+  // child exits. SIGTERM alone is insufficient if its handler stalls or ignores
+  // shutdown. The server has a 5s graceful deadline; allow it 7s before escalation.
+  child.ref();
+  const finish = () => {
+    clearTimeout(escalate);
+    child.removeListener('exit', finish);
+    child.removeListener('error', onError);
+    child.unref();
+  };
+  const onError = (error: Error) => {
+    console.error(`[ServerLifecycle] Could not stop child ${child.pid}: ${error.message}`);
+    finish();
+  };
+  const escalate = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }, 7000);
+  child.once('exit', finish);
+  child.once('error', onError);
+  child.kill('SIGTERM');
 }
 
 /**

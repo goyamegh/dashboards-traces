@@ -9,6 +9,7 @@
  */
 
 import express, { Express } from 'express';
+import type { Server } from 'http';
 import routes from './routes/index.js';
 import { setupMiddleware, setupSpaFallback, setupFinalErrorHandler } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
@@ -21,6 +22,7 @@ import { runColdStartMigrations } from './services/coldStartMigrations.js';
 import { getStorageModule } from './adapters/index.js';
 import { initEvalTracerProvider, resolveEvalTelemetryConfig, shutdownEvalTracer } from '@/lib/telemetry';
 import type { OpenSearchExporterConfig } from '@/lib/telemetry';
+import { installGracefulShutdown, type GracefulShutdownHandle, type GracefulShutdownOptions } from './utils/gracefulShutdown.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -100,7 +102,9 @@ export async function createApp(): Promise<Express> {
     ...config.telemetry,
     opensearch: opensearchExporterConfig,
   }));
-  process.once('SIGTERM', async () => { await shutdownEvalTracer(); });
+  // Telemetry is flushed by installAppShutdown(); createApp() itself must not
+  // register signal listeners — a bare SIGTERM listener suppresses Node's
+  // default termination, and a caller that only listens would never exit.
 
   // Swap to OpenSearch storage when configured and reachable
   await initializeStorageBackend();
@@ -132,6 +136,21 @@ export async function createApp(): Promise<Express> {
   setupFinalErrorHandler(app);
 
   return app;
+}
+
+/**
+ * Wire SIGTERM/SIGINT handling for a listener serving an app from createApp():
+ * stop accepting requests immediately, then drain and flush eval telemetry plus
+ * entrypoint cleanup (child agents, timers), exit 0 — all bounded by the timeout.
+ * Every entrypoint that calls `app.listen()` must call this on the resulting
+ * server, otherwise the process does not react to termination signals the
+ * same way (see server/utils/gracefulShutdown.ts).
+ */
+export function installAppShutdown(server: Server, options: GracefulShutdownOptions = {}): GracefulShutdownHandle {
+  return installGracefulShutdown(server, {
+    ...options,
+    cleanup: [...(options.cleanup ?? []), shutdownEvalTracer],
+  });
 }
 
 export default createApp;
