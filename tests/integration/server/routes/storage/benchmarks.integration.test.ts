@@ -57,20 +57,27 @@ const checkBackend = async (): Promise<boolean> => {
  * backends and keeps running everywhere.
  *
  * Fails CLOSED: only an explicit `{ status: 'ok', backend: 'file' }` means
- * "file". A non-2xx health response, a malformed body, a storage error state
- * or a network failure during the probe THROWS (failing the suite in
- * beforeAll) instead of being mistaken for file storage and silently
- * skipping the only test that exercises /execute → /cancel.
+ * "file". Once a server answers, a non-2xx health response, a malformed body
+ * or a storage error state THROWS (failing the suite in beforeAll) instead
+ * of being mistaken for file storage and silently skipping the only test
+ * that exercises /execute → /cancel.
+ *
+ * The one outcome that is NOT a throw is `'unreachable'` (connection
+ * refused / DNS / no server at AH_PORT): that is the repo-wide "no backend
+ * started" convention every integration suite follows — ci.yml's
+ * `release-rehearsal` job runs plain `npm test` (all suites, integration
+ * included) on a runner with NO server, and must stay green. The caller
+ * decides what unreachable means: a skip-with-warning normally, a FAILURE
+ * when AH_TEST_EXPECT_BACKEND promised a backend (the integration-tests job).
  */
-type StorageBackend = 'file' | 'opensearch';
+type StorageBackend = 'file' | 'opensearch' | 'unreachable';
 const probeStorageBackend = async (): Promise<StorageBackend> => {
   let response: Response;
   try {
     response = await fetch(`${BASE_URL}/api/storage/health`);
   } catch (error: any) {
-    // Network-level failure (server down, wrong AH_PORT, DNS). Rethrown with
-    // context — this is a suite FAILURE, not "file storage".
-    throw new Error(`storage health probe: ${BASE_URL} unreachable — ${error?.cause?.message || error?.message || error}`);
+    console.warn(`[benchmarks.integration] ${BASE_URL} unreachable — ${error?.cause?.message || error?.message || error}`);
+    return 'unreachable';
   }
   const text = await response.text();
   if (!response.ok) {
@@ -332,14 +339,27 @@ describe('Benchmark Cancel Integration Tests', () => {
   let leakedReportIds: string[] = [];
 
   beforeAll(async () => {
-    // The strict probe is this suite's FIRST and ONLY gate. An unreachable
-    // server, a non-2xx / malformed health answer or an unhealthy storage
-    // state all THROW here and fail the suite (the lenient `checkBackend()`
-    // used by the sibling describes below would have turned every one of
-    // those into a silent skip — even in CI). The only outcome that skips
-    // anything is an explicitly detected file backend, and that skips just
-    // the execute-then-cancel test.
+    // The strict probe is this suite's FIRST and ONLY gate. A non-2xx /
+    // malformed health answer or an unhealthy storage state THROWS here and
+    // fails the suite (the lenient `checkBackend()` used by the sibling
+    // describes below would have turned every one of those into a silent
+    // skip — even in CI). An unreachable server skips the suite with a
+    // warning like every other integration suite — UNLESS a CI job promised
+    // a backend via AH_TEST_EXPECT_BACKEND, in which case it fails. An
+    // explicitly detected file backend skips just the execute-then-cancel
+    // test.
     const backend = await probeStorageBackend();
+    if (backend === 'unreachable') {
+      if (EXPECTED_BACKEND) {
+        throw new Error(
+          `AH_TEST_EXPECT_BACKEND=${EXPECTED_BACKEND} but no server answers at ${BASE_URL} — ` +
+          'the CI job promised a backend; refusing to skip',
+        );
+      }
+      console.warn('Backend not available - skipping integration tests');
+      console.warn('Start the backend with: npm run dev:server');
+      return;
+    }
     backendAvailable = true;
     if (EXPECTED_BACKEND && backend !== EXPECTED_BACKEND) {
       throw new Error(
