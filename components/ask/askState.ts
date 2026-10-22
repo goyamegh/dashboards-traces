@@ -64,7 +64,7 @@ function nearbyTextFor(range: Range): string | undefined {
   if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
   let el = node as HTMLElement | null;
   for (let i = 0; el && i < 6; i++) {
-    const text = el.innerText?.trim() ?? '';
+    const text = (el.innerText ?? el.textContent ?? '').trim();
     if (text.length >= 40 || /^(P|LI|TD|TH|PRE|DIV|SECTION|ARTICLE|H[1-6])$/.test(el.tagName)) {
       if (text.length > 0) return text.slice(0, NEARBY_CAP);
     }
@@ -100,8 +100,8 @@ export function useTextSelection(): [PendingSelection | null, () => void] {
     const onMouseUp = () => setTimeout(capture, 0);
     const onKeyUp = (e: KeyboardEvent) => { if (e.shiftKey || e.key === 'Shift') setTimeout(capture, 0); };
     const onMouseDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest('[data-ask-ui]')) return;
+      const t = e.target as Element | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-ask-ui]')) return;
       setPending(null);
     };
     document.addEventListener('mouseup', onMouseUp);
@@ -171,16 +171,20 @@ export function useAskThreads() {
   const aborters = useRef<Record<string, AbortController>>({});
   const prepares = useRef<Record<string, Promise<void>>>({});
   const threadsRef = useRef(threads);
-  threadsRef.current = threads;
 
-  const update = useCallback((id: string, fn: (t: AskThread) => AskThread) => {
-    setThreads((prev) => {
-      if (!prev[id]) return prev;
-      const next = { ...prev, [id]: fn(prev[id]) };
-      threadsRef.current = next;
-      return next;
-    });
+  // threadsRef is the source of truth and is updated SYNCHRONOUSLY; React
+  // state mirrors it. (A setState updater runs at render time, so code that
+  // awaits a promise and then reads the ref — ask() after prepare() — would
+  // otherwise see stale data.)
+  const commit = useCallback((next: Record<string, AskThread>) => {
+    threadsRef.current = next;
+    setThreads(next);
   }, []);
+  const update = useCallback((id: string, fn: (t: AskThread) => AskThread) => {
+    const prev = threadsRef.current;
+    if (!prev[id]) return;
+    commit({ ...prev, [id]: fn(prev[id]) });
+  }, [commit]);
 
   /** Build the snapshot + pi session now so the first answer starts faster. */
   const prepare = useCallback((threadId: string) => {
@@ -195,11 +199,10 @@ export function useAskThreads() {
 
   const createThread = useCallback((route: string, selections: AskSelection[], opts: { prepare?: boolean } = {}): AskThread => {
     const t: AskThread = { id: newThreadId(), route, selections, turns: [], createdAt: Date.now() };
-    threadsRef.current = { ...threadsRef.current, [t.id]: t };
-    setThreads((prev) => ({ ...prev, [t.id]: t }));
+    commit({ ...threadsRef.current, [t.id]: t });
     if (opts.prepare) setTimeout(() => prepare(t.id), 0);
     return t;
-  }, [prepare]);
+  }, [prepare, commit]);
 
   const addSelection = useCallback((threadId: string, sel: AskSelection) => {
     update(threadId, (t) => (t.selections.some((s) => s.text === sel.text) ? t : { ...t, selections: [...t.selections, sel] }));
@@ -211,8 +214,10 @@ export function useAskThreads() {
 
   const removeThread = useCallback((threadId: string) => {
     aborters.current[threadId]?.abort();
-    setThreads((prev) => { const n = { ...prev }; delete n[threadId]; threadsRef.current = n; return n; });
-  }, []);
+    const n = { ...threadsRef.current };
+    delete n[threadId];
+    commit(n);
+  }, [commit]);
 
   /** Import a persisted pi session as a thread (sessions list → open). */
   const importSession = useCallback((s: { id: string; page: AskPageContext; selections: AskSelection[]; model?: string; turns: Array<{ id: string; question: string; answer: string; error?: string; toolCalls: string[]; firstTokenMs?: number; durationMs?: number; startedAt: string }> }) => {
@@ -237,10 +242,9 @@ export function useAskThreads() {
         startedAt: Date.parse(turn.startedAt) || Date.now(),
       })),
     };
-    threadsRef.current = { ...threadsRef.current, [t.id]: t };
-    setThreads((prev) => ({ ...prev, [t.id]: t }));
+    commit({ ...threadsRef.current, [t.id]: t });
     return t;
-  }, []);
+  }, [commit]);
 
   const ask = useCallback(async (threadId: string, question: string) => {
     if (!threadsRef.current[threadId]) return;
