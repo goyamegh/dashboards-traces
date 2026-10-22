@@ -101,7 +101,7 @@ describe('both summers agree and neither double-counts', () => {
     expect(m.outputTokens).toBe(CHAT_OUT);
     expect(m.totalTokens).toBe(CHAT_IN + CHAT_OUT);
     expect(m.llmCalls).toBe(3);
-    expect(m.toolsUsed.sort()).toEqual(['run_query', 'search_docs', 'describe_index']);
+    expect(m.toolsUsed.sort()).toEqual(['describe_index', 'run_query', 'search_docs']);
     expect(m.traceId).toBe('a54f35c518ca4fe4b86b07f10aeea457');
     expect(m.durationMs).toBeGreaterThan(11_000);
     expect(m.status).toBe('success');
