@@ -115,6 +115,9 @@ describe('FileObservabilityModule', () => {
 
     it('unions traceId + runId (A OR B) when 2+ correlation clauses', async () => {
       expect(computeUseUnion({ traceId: 'trace-A', runIds: ['run-1'] })).toBe(true);
+      // Parity with tracesService.ts: sessionId is a correlation clause too.
+      expect(computeUseUnion({ traceId: 'trace-A', sessionId: 's1' })).toBe(true);
+      expect(computeUseUnion({ sessionId: 's1' })).toBe(false);
       const r = await mod.traces.query({ traceId: 'trace-A', runIds: ['run-1'] });
       expect(r.spans.map((s) => s.spanId).sort()).toEqual(['a1', 'b1']);
     });

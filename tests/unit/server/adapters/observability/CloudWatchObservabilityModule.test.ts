@@ -420,6 +420,17 @@ describe('CloudWatchObservabilityModule', () => {
       expect(surrogate).toMatchObject({ runId: 'report-xyz', inputTokens: 21476, correlatedBy: 'window' });
     });
 
+    it('forRuns does not let one key\'s window hint hide an older id-only key (scan covers the lookback)', async () => {
+      // The id-only run happened long before the window-hinted key's run.
+      const [surrogate, real] = await mod(reader).metrics.forRuns(['report-xyz', RUN], {
+        agentsByRunId: { 'report-xyz': [{ serviceName: 'some-other-service', startedAt: T0_MS + 10 * 86_400_000, endedAt: T0_MS + 10 * 86_400_000 + 60_000 }] },
+      });
+      const idScan = reader.calls.filter[0];
+      expect(idScan.endMs - idScan.startMs).toBe(14 * 24 * 3600 * 1000); // not narrowed to the other key's window
+      expect(real).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
+      expect(surrogate.totalTokens).toBe(0);
+    });
+
     it('forRuns falls back to Insights when the bounded FilterLogEvents scan is incomplete', async () => {
       reader.incompleteFilter = true;
       const m = await mod(reader).metrics.forRun(RUN);

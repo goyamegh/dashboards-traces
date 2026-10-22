@@ -183,14 +183,18 @@ class CloudWatchTracesOperations implements ITracesOperations {
    * windows (±5 min for clock skew — a run's spans cannot fall outside its own
    * wall-clock window); otherwise the configured lookback.
    */
-  window(options: Pick<TracesQueryOptions, 'startTime' | 'endTime' | 'agents'>): { startMs: number; endMs: number } {
+  window(
+    options: Pick<TracesQueryOptions, 'startTime' | 'endTime' | 'agents'>,
+    /** Narrow to the agents' windows. Only valid when every correlator on the request belongs to the same run(s) those windows describe. */
+    narrowToAgents = true
+  ): { startMs: number; endMs: number } {
     const now = Date.now();
     if (options.startTime || options.endTime) {
       const endMs = options.endTime ? toMs(options.endTime) : now;
       const startMs = options.startTime ? toMs(options.startTime) : endMs - this.lookbackMs;
       return { startMs, endMs };
     }
-    const windows = (options.agents || []).filter((a) => Number.isFinite(a.startedAt) && Number.isFinite(a.endedAt));
+    const windows = narrowToAgents ? (options.agents || []).filter((a) => Number.isFinite(a.startedAt) && Number.isFinite(a.endedAt)) : [];
     if (windows.length > 0) {
       const PAD = 5 * 60 * 1000;
       return {
@@ -221,13 +225,20 @@ class CloudWatchTracesOperations implements ITracesOperations {
     forceWindow = false
   ): Promise<OpenSearchSpanSource[]> {
     const { agents, textSearch } = options;
+    // The agents' windows bound the Insights (Strategy C) query by construction.
+    // They may bound the exact-id scan too ONLY in the single-run shape (the
+    // run-report Traces tab: one run's traceId/runId plus that run's window);
+    // a batch chunk mixes keys whose runs happened at different times, so its
+    // id scan must cover the full lookback or an older id-only key sees nothing.
+    const singleRunShape = !forceWindow && extraExactIds.length === 0 && (options.runIds?.filter(Boolean).length ?? 0) <= 1;
     const { startMs, endMs } = this.window(options);
+    const exactScan = singleRunShape ? { startMs, endMs } : this.window(options, false);
     const messages: string[] = [];
 
     const exactPattern = idTermsFilterPattern([...exactCorrelatorIds(options), ...extraExactIds]);
     let exactComplete = false;
     if (exactPattern) {
-      const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern: exactPattern, startMs, endMs, limit: 10_000 });
+      const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern: exactPattern, startMs: exactScan.startMs, endMs: exactScan.endMs, limit: 10_000 });
       messages.push(...res.events.map((e) => e.message));
       exactComplete = res.complete;
       debug('CloudWatchTraces', `FilterLogEvents(${exactPattern}) → ${res.events.length} records, complete=${res.complete}`);

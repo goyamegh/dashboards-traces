@@ -153,10 +153,6 @@ export class CloudWatchReader implements ICloudWatchReader {
     return names;
   }
 
-  get lookbackMs(): number {
-    return this.config.lookbackMs ?? DEFAULT_LOOKBACK_MS;
-  }
-
   destroy(): void {
     this.client.destroy();
   }

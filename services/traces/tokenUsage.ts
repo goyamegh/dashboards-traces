@@ -16,8 +16,9 @@
  *
  * A root that reports usage with no instrumented children (agents that only
  * instrument the top-level call) is still counted. When a parent's aggregate
- * disagrees with the sum of its usage-bearing descendants, the descendants win
- * — they are the per-call ground truth for cost.
+ * is smaller than or equal to the sum of its usage-bearing descendants, the
+ * descendants win (per-call ground truth); when it is larger, the children
+ * are only partially instrumented and the parent is counted instead.
  */
 
 export interface UsageSpanLike {
@@ -48,28 +49,51 @@ export function hasUsage(attrs: Record<string, unknown> | undefined): boolean {
 }
 
 /**
- * Select the spans whose `gen_ai.usage.*` should be summed: usage-bearing
- * spans with no usage-bearing descendant. Spans without ids are treated as
- * leaves (flat exports with no tree information behave as before).
+ * Select the spans whose `gen_ai.usage.*` should be summed.
+ *
+ * Per subtree: if a usage-bearing span has usage-bearing descendants, the
+ * descendants are counted instead of the span — unless the span's own total
+ * is LARGER than what its counted descendants add up to, in which case the
+ * span is the more complete record (children only partially instrumented)
+ * and it is counted alone. A roll-up equal to its children (Strands) and a
+ * root that is the only instrumented span both resolve correctly. Spans
+ * without ids are treated as leaves (flat exports behave as before).
  */
 export function selectUsageSpans<T extends UsageSpanLike>(spans: T[]): T[] {
   const byId = new Map<string, T>();
   for (const s of spans) if (s.spanId) byId.set(s.spanId, s);
-
-  const hasUsageDescendant = new Set<string>();
+  const children = new Map<string, T[]>();
+  const roots: T[] = [];
   for (const s of spans) {
-    if (!hasUsage(s.attributes)) continue;
-    // Walk up and mark every ancestor; stop at a cycle or an unknown parent.
-    const seen = new Set<string>();
-    let parentId = s.parentSpanId;
-    while (parentId && byId.has(parentId) && !seen.has(parentId)) {
-      seen.add(parentId);
-      hasUsageDescendant.add(parentId);
-      parentId = byId.get(parentId)!.parentSpanId;
+    if (s.parentSpanId && byId.has(s.parentSpanId) && s.parentSpanId !== s.spanId) {
+      const list = children.get(s.parentSpanId) ?? [];
+      list.push(s);
+      children.set(s.parentSpanId, list);
+    } else {
+      roots.push(s);
     }
   }
 
-  return spans.filter((s) => hasUsage(s.attributes) && !(s.spanId && hasUsageDescendant.has(s.spanId)));
+  const total = (s: T): number => readInputTokens(s.attributes) + readOutputTokens(s.attributes);
+  const out: T[] = [];
+  const visiting = new Set<string>();
+
+  /** Returns the spans counted within this subtree (cycle-safe). */
+  const collect = (node: T): T[] => {
+    if (node.spanId) {
+      if (visiting.has(node.spanId)) return [];
+      visiting.add(node.spanId);
+    }
+    const fromChildren: T[] = [];
+    for (const c of node.spanId ? children.get(node.spanId) ?? [] : []) fromChildren.push(...collect(c));
+    if (!hasUsage(node.attributes)) return fromChildren;
+    if (fromChildren.length === 0) return [node];
+    const childSum = fromChildren.reduce((n, c) => n + total(c), 0);
+    return total(node) > childSum ? [node] : fromChildren;
+  };
+
+  for (const r of roots) out.push(...collect(r));
+  return out;
 }
 
 export interface UsageTotals {

@@ -51,6 +51,21 @@ describe('tokenUsage — roll-up aware token attribution', () => {
     expect(sumUsage(only)).toMatchObject({ inputTokens: 10, outputTokens: 2, countedSpans: 1 });
   });
 
+  it('counts the parent when its aggregate exceeds what partially-instrumented children report', () => {
+    const tree = [
+      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 } },
+      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 300 } }, // the other calls never reported
+    ];
+    expect(sumUsage(tree)).toMatchObject({ inputTokens: 1000, outputTokens: 100, countedSpans: 1 });
+    // …but a roll-up equal to its children still resolves to the children (per-call truth, 2 LLM calls).
+    const equal = [
+      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 500 } },
+      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 200 } },
+      { spanId: 'c2', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 300 } },
+    ];
+    expect(sumUsage(equal)).toMatchObject({ inputTokens: 500, countedSpans: 2 });
+  });
+
   it('treats spans without ids as leaves (flat exports keep legacy behaviour)', () => {
     const flat = [
       { attributes: { 'gen_ai.usage.input_tokens': 1 } },

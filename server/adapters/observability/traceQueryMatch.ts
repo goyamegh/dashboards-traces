@@ -35,10 +35,11 @@ export function serviceMatches(s: Span, name: string): boolean {
   return a['service.name'] === name || a['serviceName'] === name || a['gen_ai.agent.name'] === name;
 }
 
+/** Mirrors tracesService.ts: 2+ correlation clauses (traceId, runIds, sessionId, each agents entry) → OR semantics. */
 export function computeUseUnion(options: TracesQueryOptions): boolean {
-  const { traceId, runIds, agents } = options;
+  const { traceId, runIds, sessionId, agents } = options;
   return (
-    [!!traceId, !!(runIds && runIds.length > 0)].filter(Boolean).length + (agents?.length ?? 0) > 1
+    [!!traceId, !!(runIds && runIds.length > 0), !!sessionId].filter(Boolean).length + (agents?.length ?? 0) > 1
   );
 }
 
