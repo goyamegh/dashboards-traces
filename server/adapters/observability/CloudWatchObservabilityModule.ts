@@ -25,11 +25,13 @@ import type {
   TracesQueryOptions,
   LogsQueryOptions,
   ObservabilityBackendInfo,
+  RunMetricsHints,
+  BatchMetricsHints,
 } from '../types.js';
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../../types/index.js';
 import { transformSpan, type OpenSearchSpanSource } from '../../services/tracesService.js';
-import { computeMetricsFromSpans } from '../../services/metricsService.js';
+import { buildChunkLookups, groupAndCompute } from '../../services/metricsService.js';
 import { debug } from '../../../lib/debug.js';
 import { computeUseUnion, matchesQuery, spanMs, toMs } from './traceQueryMatch.js';
 import {
@@ -211,12 +213,18 @@ class CloudWatchTracesOperations implements ITracesOperations {
    * did not cover the window. Both result sets are unioned; `matchesQuery`
    * then applies the exact predicate.
    */
-  async fetchSources(options: TracesQueryOptions, useUnion: boolean): Promise<OpenSearchSpanSource[]> {
+  async fetchSources(
+    options: TracesQueryOptions,
+    useUnion: boolean,
+    extraExactIds: string[] = [],
+    /** Always run the window/Insights query even when exact ids already matched (batch keys that only have a window). */
+    forceWindow = false
+  ): Promise<OpenSearchSpanSource[]> {
     const { agents, textSearch } = options;
     const { startMs, endMs } = this.window(options);
     const messages: string[] = [];
 
-    const exactPattern = idTermsFilterPattern(exactCorrelatorIds(options));
+    const exactPattern = idTermsFilterPattern([...exactCorrelatorIds(options), ...extraExactIds]);
     let exactComplete = false;
     if (exactPattern) {
       const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern: exactPattern, startMs, endMs, limit: 10_000 });
@@ -229,7 +237,7 @@ class CloudWatchTracesOperations implements ITracesOperations {
     const noExact = !exactPattern;
     // With union semantics a window clause can only ADD spans; skip the slower
     // Insights round-trip when the exact ids already found this run's spans.
-    const windowStillNeeded = needsWindow && (!useUnion || messages.length === 0);
+    const windowStillNeeded = needsWindow && (forceWindow || !useUnion || messages.length === 0);
     if (noExact || windowStillNeeded || (exactPattern && !exactComplete)) {
       const rows = await this.reader.insights({
         logGroups: [this.logGroup],
@@ -352,41 +360,52 @@ class CloudWatchLogsOperations implements ILogsOperations {
 class CloudWatchMetricsOperations implements IMetricsOperations {
   constructor(private readonly traces: CloudWatchTracesOperations) {}
 
-  async forRun(runId: string): Promise<MetricsResult> {
-    return (await this.forRuns([runId]))[0];
+  async forRun(runId: string, hints?: RunMetricsHints): Promise<MetricsResult> {
+    const batch: BatchMetricsHints = {
+      sessionIdByRunId: hints?.sessionId ? { [runId]: hints.sessionId } : undefined,
+      traceIdByRunId: hints?.traceId ? { [runId]: hints.traceId } : undefined,
+      agentsByRunId: hints?.agents?.length ? { [runId]: hints.agents } : undefined,
+    };
+    return (await this.forRuns([runId], batch))[0];
   }
 
   /**
-   * Spans for the chunk are fetched through the traces fast path (FilterLogEvents
-   * on the run ids, Insights fallback) and grouped by `agent_health.run.id` /
-   * `gen_ai.conversation.id` before the shared metrics math.
+   * One traces fetch per chunk with every correlator unioned (run ids via
+   * FilterLogEvents, Strategy-C windows via Insights when needed), then the
+   * SAME attribution + math as the OpenSearch backend (`buildChunkLookups` /
+   * `groupAndCompute`), so both report identical numbers and `correlatedBy`.
    */
-  async forRuns(runIds: string[]): Promise<MetricsResult[]> {
+  async forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]> {
     const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
     if (valid.length === 0) return [];
     const CHUNK = 50;
     const results: MetricsResult[] = [];
     for (let i = 0; i < valid.length; i += CHUNK) {
       const chunk = valid.slice(i, i + CHUNK);
-      const byRun = new Map<string, OpenSearchSpanSource[]>();
-      for (const id of chunk) byRun.set(id, []);
+      const lookups = buildChunkLookups(chunk, hints?.sessionIdByRunId, hints?.traceIdByRunId, hints?.agentsByRunId);
+      let sources: OpenSearchSpanSource[] = [];
       try {
-        const sources = await this.traces.fetchSources({ runIds: chunk }, false);
-        const seen = new Set<string>();
-        for (const src of sources) {
-          if (src.spanId && seen.has(src.spanId)) continue;
-          if (src.spanId) seen.add(src.spanId);
-          const a = src.attributes || {};
-          const rid = [a['agent_health.run.id'], a['gen_ai.conversation.id']].find((v) => typeof v === 'string' && byRun.has(v)) as string | undefined;
-          if (rid) byRun.get(rid)!.push(src);
-        }
+        const traceIds = [...lookups.traceIdToRunId.keys()];
+        const query: TracesQueryOptions = {
+          runIds: lookups.runIdCorrelators,
+          agents: lookups.agentHints.length ? lookups.agentHints : undefined,
+          // Strategy A ids ride along as plain correlator terms (FilterLogEvents
+          // matches them anywhere in the record); the attribution step maps
+          // each span back to its key by traceId.
+          ...(traceIds.length === 1 ? { traceId: traceIds[0] } : {}),
+        };
+        const extraIds = [...lookups.sessionIdToRunId.keys(), ...(traceIds.length > 1 ? traceIds : [])];
+        // A key with only a window hint (surrogate) can only be served by the
+        // window query, so it must run even when other keys' ids already hit.
+        const hasSurrogateKey = lookups.runIdCorrelators.length < chunk.length;
+        sources = await this.traces.fetchSources(query, true, extraIds, hasSurrogateKey);
       } catch (e: any) {
         console.warn(`[CloudWatchMetrics] span query failed for ${chunk.length} run id(s): ${e?.message ?? e}`);
       }
-      for (const id of chunk) {
-        const spans = (byRun.get(id) || []).sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
-        results.push(computeMetricsFromSpans(id, spans));
-      }
+      const seen = new Set<string>();
+      const unique = sources.filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
+      unique.sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
+      results.push(...groupAndCompute(chunk, unique, lookups, false));
     }
     return results;
   }

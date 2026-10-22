@@ -204,6 +204,14 @@ describe('Logs Routes', () => {
       });
     });
 
+    it('accepts a traceId as the scope when runId is absent (CloudWatch log correlation)', async () => {
+      mockFetchLogs.mockResolvedValue({ logs: [], total: 0 });
+      const { req, res } = createMocks({ traceId: 'a'.repeat(32), serviceName: 'svc' });
+      await getRouteHandler(logsRoutes, 'post', '/api/logs')(req, res);
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({ traceId: 'a'.repeat(32), serviceName: 'svc' }));
+    });
+
     it('should return 400 when runId is not a string', async () => {
       const { req, res } = createMocks({ runId: 12345 });
       const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');

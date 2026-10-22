@@ -29,8 +29,12 @@ router.post('/api/logs', async (req: Request, res: Response) => {
     // query to a specific run — an empty/missing runId has no legitimate
     // meaning here and previously fell through to an unscoped match-all
     // query over the whole logs index.
-    if (!runId || typeof runId !== 'string' || !runId.trim()) {
-      return res.status(400).json({ error: 'runId is required and must be a non-empty string' });
+    // CloudWatch OTel log records correlate by trace id rather than by a run id
+    // embedded in the message, so either scope is accepted — but one is required.
+    const hasRunId = typeof runId === 'string' && runId.trim().length > 0;
+    const hasTraceId = typeof traceId === 'string' && traceId.trim().length > 0;
+    if (!hasRunId && !hasTraceId) {
+      return res.status(400).json({ error: 'runId (or traceId) is required and must be a non-empty string' });
     }
 
     // Codex review follow-up: size was passed straight through to the
