@@ -169,6 +169,7 @@ export function buildPageContext(route: string): AskPageContext {
 export function useAskThreads() {
   const [threads, setThreads] = useState<Record<string, AskThread>>({});
   const aborters = useRef<Record<string, AbortController>>({});
+  const prepares = useRef<Record<string, Promise<void>>>({});
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
 
@@ -186,9 +187,10 @@ export function useAskThreads() {
     const t = threadsRef.current[threadId];
     if (!t || t.sessionId || t.preparing) return;
     update(threadId, (x) => ({ ...x, preparing: true }));
-    prepareAsk({ pageContext: buildPageContext(t.route), selections: t.selections })
+    prepares.current[threadId] = prepareAsk({ pageContext: buildPageContext(t.route), selections: t.selections })
       .then((p) => update(threadId, (x) => (x.sessionId ? x : { ...x, sessionId: p.sessionId, refs: p.refs, loaded: p.loaded, model: p.model, prepared: true, preparing: false })))
-      .catch(() => update(threadId, (x) => ({ ...x, preparing: false }))); // ask() will prepare on demand
+      .catch(() => update(threadId, (x) => ({ ...x, preparing: false }))) // ask() will prepare on demand
+      .finally(() => { delete prepares.current[threadId]; });
   }, [update]);
 
   const createThread = useCallback((route: string, selections: AskSelection[], opts: { prepare?: boolean } = {}): AskThread => {
@@ -241,16 +243,22 @@ export function useAskThreads() {
   }, []);
 
   const ask = useCallback(async (threadId: string, question: string) => {
-    const thread = threadsRef.current[threadId];
-    if (!thread) return;
+    if (!threadsRef.current[threadId]) return;
+    const isFirstTurn = threadsRef.current[threadId].turns.length === 0;
     const turnId = `turn-${Date.now().toString(36)}`;
     const turn: AskTurnState = { id: turnId, question, answer: '', status: 'streaming', tools: [], startedAt: Date.now() };
     update(threadId, (t) => ({ ...t, turns: [...t.turns, turn] }));
+    // A prepare fired on chip click may still be in flight when the user hits
+    // Enter; wait for it so the question joins THAT pi session instead of
+    // making the server build a second snapshot.
+    if (prepares.current[threadId]) await prepares.current[threadId];
+    const thread = threadsRef.current[threadId];
+    if (!thread) return;
 
     const controller = new AbortController();
     aborters.current[threadId] = controller;
     // The first turn carries the highlighted text (prepare() only used it for the snapshot); follow-ups add none.
-    const sendSelections = thread.turns.length === 0 ? thread.selections : [];
+    const sendSelections = isFirstTurn ? thread.selections : [];
     const patchTurn = (fn: (x: AskTurnState) => AskTurnState) =>
       update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? fn(x) : x)) }));
     try {

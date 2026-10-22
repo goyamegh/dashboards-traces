@@ -50,7 +50,6 @@ export interface AskTurn {
 
 export interface AskSessionSummary {
   id: string;
-  path: string;
   createdAt: string;
   updatedAt: string;
   page: AskPageContext;
@@ -122,7 +121,7 @@ export class PiAskSessionStore {
   get(id: string): AskSessionDetail | null {
     const file = this.findFile(id);
     if (!file) return null;
-    return readSession(this.SessionManager.open(file, this.dir), file);
+    return readSession(this.SessionManager.open(file, this.dir));
   }
 
   list(opts: { route?: string; limit?: number } = {}): AskSessionSummary[] {
@@ -131,7 +130,7 @@ export class PiAskSessionStore {
     const out: AskSessionSummary[] = [];
     for (const f of files) {
       try {
-        const detail = readSession(this.SessionManager.open(join(this.dir, f), this.dir), join(this.dir, f));
+        const detail = readSession(this.SessionManager.open(join(this.dir, f), this.dir));
         if (!detail) continue;
         if (opts.route && detail.page.route !== opts.route) continue;
         const { selections: _s, turns: _t, ...summary } = detail;
@@ -152,7 +151,7 @@ function textOf(message: any): string {
 }
 
 /** Rebuild the Agent Health view of a pi session from its entries. Returns null for files that aren't ask sessions. */
-export function readSession(sm: PiSessionManagerLike, path: string): AskSessionDetail | null {
+export function readSession(sm: PiSessionManagerLike): AskSessionDetail | null {
   const entries = sm.getEntries();
   const metaEntry = entries.find((e) => e.type === 'custom' && e.customType === ASK_META_ENTRY);
   if (!metaEntry) return null;
@@ -182,7 +181,6 @@ export function readSession(sm: PiSessionManagerLike, path: string): AskSessionD
   const updatedAt = last?.completedAt ?? last?.startedAt ?? meta.createdAt;
   return {
     id: sm.getSessionId(),
-    path,
     createdAt: meta.createdAt,
     updatedAt,
     page: meta.page,

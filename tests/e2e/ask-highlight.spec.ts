@@ -110,10 +110,10 @@ async function stubAsk(page: Page, answer: string): Promise<AskStub> {
 const SESSIONS_FIXTURE = (route: string) => ({
   dir: '/tmp/x/.agent-health/ask-sessions',
   sessions: [
-    { id: 'ask-1', path: '/tmp/x/a.jsonl', createdAt: '2026-10-20T10:00:00Z', updatedAt: '2026-10-21T09:00:00Z', page: { route, title: 'Test case' }, firstQuestion: 'Why did this case fail?', firstSelection: 'Fact precision 12.5/100', turnCount: 2, lastAnswerPreview: 'Recall was 1/8.', model: 'amazon-bedrock/m' },
-    { id: 'ask-2', path: '/tmp/x/b.jsonl', createdAt: '2026-10-20T10:00:00Z', updatedAt: '2026-10-21T08:00:00Z', page: { route: '/compare/b?runs=x,y', title: 'Compare Runs' }, firstQuestion: 'Why did this case fail?', turnCount: 1, lastAnswerPreview: 'Only the control run regressed.' },
-    { id: 'ask-3', path: '/tmp/x/c.jsonl', createdAt: '2026-10-19T10:00:00Z', updatedAt: '2026-10-19T10:00:00Z', page: { route: '/compare/b?runs=x,y', title: 'Compare Runs' }, firstQuestion: 'What does this span do?', turnCount: 1, lastAnswerPreview: 'It marks a permission wait.' },
-    { id: 'ask-4', path: '/tmp/x/d.jsonl', createdAt: '2026-10-18T10:00:00Z', updatedAt: '2026-10-18T10:00:00Z', page: { route: '/evaluations/runs/eval-run-9/inspect', title: 'Nightly' }, firstQuestion: 'Summarize this run', turnCount: 3, lastAnswerPreview: '' },
+    { id: 'ask-1', createdAt: '2026-10-20T10:00:00Z', updatedAt: '2026-10-21T09:00:00Z', page: { route, title: 'Test case' }, firstQuestion: 'Why did this case fail?', firstSelection: 'Fact precision 12.5/100', turnCount: 2, lastAnswerPreview: 'Recall was 1/8.', model: 'amazon-bedrock/m' },
+    { id: 'ask-2', createdAt: '2026-10-20T10:00:00Z', updatedAt: '2026-10-21T08:00:00Z', page: { route: '/compare/b?runs=x,y', title: 'Compare Runs' }, firstQuestion: 'Why did this case fail?', turnCount: 1, lastAnswerPreview: 'Only the control run regressed.' },
+    { id: 'ask-3', createdAt: '2026-10-19T10:00:00Z', updatedAt: '2026-10-19T10:00:00Z', page: { route: '/compare/b?runs=x,y', title: 'Compare Runs' }, firstQuestion: 'What does this span do?', turnCount: 1, lastAnswerPreview: 'It marks a permission wait.' },
+    { id: 'ask-4', createdAt: '2026-10-18T10:00:00Z', updatedAt: '2026-10-18T10:00:00Z', page: { route: '/evaluations/runs/eval-run-9/inspect', title: 'Nightly' }, firstQuestion: 'Summarize this run', turnCount: 3, lastAnswerPreview: '' },
   ],
 });
 

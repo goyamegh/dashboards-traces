@@ -54,7 +54,6 @@ export interface AskPrepared {
 
 export interface AskSessionSummary {
   id: string;
-  path: string;
   createdAt: string;
   updatedAt: string;
   page: AskPageContext;

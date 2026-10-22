@@ -461,8 +461,10 @@ export default {
 
 `/api/ask*` sits behind the same (absent) authentication as the rest of the
 REST API — it exposes no data the API doesn't already expose, but every
-question is an LLM call, so it is rate-limited per client (20 questions and 60
-prepares per minute) and capped by `maxConcurrent`. Put the server behind your
+question is an LLM call, so it is rate-limited per client address (20 questions
+and 60 prepares per minute; behind a reverse proxy without `trust proxy` all
+users share the proxy's address and therefore one bucket) and capped by
+`maxConcurrent`. Put the server behind your
 deployment's authentication like the rest of Agent Health, or set
 `assistant.enabled: false`.
 

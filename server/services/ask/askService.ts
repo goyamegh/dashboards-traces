@@ -295,6 +295,12 @@ interface LiveSession {
 }
 const live = new Map<string, LiveSession>();
 const LIVE_TTL_MS = 30 * 60 * 1000;
+/** Prepared-but-never-asked sessions are cheap but unbounded under spam; keep at most this many around. */
+export const LIVE_UNUSED_MAX = 200;
+function evictUnusedLiveSessions(): void {
+  const unused = [...live.values()].filter((s) => s.turns === 0 && !s.busy).sort((a, b) => a.lastUsed - b.lastUsed);
+  for (let i = 0; i < unused.length - LIVE_UNUSED_MAX; i++) live.delete(unused[i].id);
+}
 const sweeper = setInterval(() => {
   const now = Date.now();
   for (const [id, s] of live) if (!s.busy && now - s.lastUsed > LIVE_TTL_MS) live.delete(id);
@@ -355,6 +361,7 @@ export async function prepareAsk(input: { pageContext: AskPageContext; selection
   const session = await createPiSession(rt, sm);
   const id = sm.getSessionId();
   live.set(id, { id, session, sm, model: `${rt.model.provider}/${rt.model.id}`, page: input.pageContext, snapshot, turns: 0, lastUsed: Date.now(), busy: false });
+  evictUnusedLiveSessions();
   debug('Ask', 'prepared', id, 'in', Date.now() - t0, 'ms; loaded:', snapshot.loaded.join(', '));
   return { sessionId: id, refs: snapshot.refs, loaded: snapshot.loaded, model: `${rt.model.provider}/${rt.model.id}` };
 }

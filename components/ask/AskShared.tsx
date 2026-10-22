@@ -20,6 +20,8 @@ export const AskMarkdown: React.FC<{ children: string; className?: string }> = (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          // Model output never loads remote resources (tracking pixels via ![](url)).
+          img: () => null,
           a: ({ href, children: kids }) => {
             const internal = !!href && href.startsWith('/') && !href.startsWith('//');
             return (
