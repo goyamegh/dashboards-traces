@@ -4,11 +4,16 @@
  */
 
 /**
- * Observability Client Pool
+ * Observability module factory.
  *
- * Shared OpenSearch client for traces, metrics, and logs queries.
- * Supports Basic auth, SigV4, and no-auth via agent-health config.
- * Clients are cached by config fingerprint and auto-cleaned after 5 min idle.
+ * Resolves the request's observability config and returns the matching
+ * IObservabilityModule:
+ *   - no config            → FileObservabilityModule (zero-config default)
+ *   - type 'opensearch'    → OpenSearchObservabilityModule (cached Client per config)
+ *   - type 'cloudwatch'    → CloudWatchObservabilityModule (cached per region/profile/log groups)
+ *
+ * Routes and services MUST go through `getObservabilityModule()`; nothing
+ * outside the adapters may hold an OpenSearch Client or an AWS SDK client.
  */
 
 import { Request } from 'express';
@@ -16,9 +21,11 @@ import { Client } from '@opensearch-project/opensearch';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
 import { createOpenSearchClient, configToCacheKey } from './opensearchClientFactory.js';
 import { OpenSearchObservabilityModule } from '../adapters/observability/OpenSearchObservabilityModule.js';
+import { CloudWatchObservabilityModule } from '../adapters/observability/CloudWatchObservabilityModule.js';
 import { FileObservabilityModule } from '../adapters/observability/FileObservabilityModule.js';
 import type { IObservabilityModule } from '../adapters/types.js';
-import type { ClusterConfig } from '../../types/index.js';
+import type { ClusterConfig, ObservabilityClusterConfig } from '../../types/index.js';
+import { observabilityBackendType } from '../../types/index.js';
 
 interface CachedClient {
   client: Client;
@@ -36,7 +43,7 @@ setInterval(() => {
       clientCache.delete(key);
     }
   }
-}, 60 * 1000);
+}, 60 * 1000).unref?.();
 
 function getOrCreateClient(config: ClusterConfig): Client {
   const key = configToCacheKey(config);
@@ -52,58 +59,55 @@ function getOrCreateClient(config: ClusterConfig): Client {
   return client;
 }
 
-export interface ObservabilityClientResult {
-  client: Client;
-  indexes: {
-    traces: string;
-    logs: string;
-    metrics: string;
-  };
+const cloudWatchCache = new Map<string, CloudWatchObservabilityModule>();
+
+export function cloudWatchCacheKey(config: ObservabilityClusterConfig): string {
+  return `cloudwatch|${config.awsRegion}|${config.awsProfile || ''}|${config.logGroups?.traces || ''}|${config.logGroups?.logs || ''}`;
 }
 
-/**
- * Get a pooled OpenSearch client for observability queries.
- * Returns null if observability is not configured.
- *
- * Usage:
- *   const obs = getObservabilityClient(req);
- *   if (!obs) return res.status(503).json({ error: 'Not configured' });
- *   const result = await obs.client.search({ index: obs.indexes.traces, body });
- */
-export function getObservabilityClient(req: Request): ObservabilityClientResult | null {
-  const config = resolveObservabilityConfig(req);
-  if (!config) return null;
-
-  const client = getOrCreateClient(config);
-  return {
-    client,
-    indexes: {
-      traces: config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
-      logs: config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
-      metrics: config.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
-    },
-  };
+/** Build a module for an explicit config (Test Connection, tests). Not cached. */
+export function createObservabilityModule(config: ObservabilityClusterConfig | null): IObservabilityModule {
+  if (!config) return new FileObservabilityModule();
+  if (observabilityBackendType(config) === 'cloudwatch') {
+    if (!config.awsRegion) throw new Error('observability.awsRegion is required when type is "cloudwatch"');
+    return new CloudWatchObservabilityModule({ region: config.awsRegion, profile: config.awsProfile, logGroups: config.logGroups });
+  }
+  if (!config.endpoint) throw new Error('observability.endpoint is required for the OpenSearch backend');
+  const client = createOpenSearchClient(config as ClusterConfig);
+  return new OpenSearchObservabilityModule(client, {
+    traces: config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+    logs: config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+    metrics: config.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+  });
 }
 
-/**
- * Resolve the active observability data-source adapter for this request.
- *
- * **Precedence invariant:** a configured OpenSearch observability cluster is
- * always the source of truth — it's returned even when unreachable (queries
- * then surface the real error rather than silently using another backend).
- * When **no** cluster is configured, the file-backed module is the zero-config
- * default, so local runs get a working Traces view out of the box.
- */
 export function getObservabilityModule(req: Request): IObservabilityModule {
   const config = resolveObservabilityConfig(req);
   if (!config) {
     return new FileObservabilityModule();
   }
 
-  const client = getOrCreateClient(config);
+  if (observabilityBackendType(config) === 'cloudwatch') {
+    const key = cloudWatchCacheKey(config);
+    let mod = cloudWatchCache.get(key);
+    if (!mod) {
+      mod = createObservabilityModule(config) as CloudWatchObservabilityModule;
+      cloudWatchCache.set(key, mod);
+    }
+    return mod;
+  }
+
+  const client = getOrCreateClient(config as ClusterConfig);
   return new OpenSearchObservabilityModule(client, {
     traces: config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
     logs: config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
     metrics: config.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
   });
+}
+
+/** Test-only: drop cached backends between cases. */
+export function __resetObservabilityCachesForTests(): void {
+  for (const e of clientCache.values()) e.client.close().catch(() => {});
+  clientCache.clear();
+  cloudWatchCache.clear();
 }

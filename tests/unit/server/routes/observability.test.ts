@@ -364,6 +364,7 @@ describe('Observability Routes', () => {
       handler(req, res);
 
       expect(res.json).toHaveBeenCalledWith({
+        logGroups: { traces: 'aws/spans', logs: '/agent-health/{service.name}' },
         indexes: {
           traces: 'otel-v1-apm-span-*',
           logs: 'ml-commons-logs-*',
