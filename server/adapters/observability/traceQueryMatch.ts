@@ -53,9 +53,13 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
   if (endTime !== undefined && spanMs(s) > toMs(endTime)) return false;
   if (serviceName && !serviceMatches(s, serviceName)) return false;
   if (textSearch) {
-    const q = textSearch.toLowerCase();
+    // Parity with the OpenSearch DSL: span name, attribute values, and the
+    // ids a user pastes into the search box (trace id / span id).
+    const q = textSearch.trim().toLowerCase();
     const hit =
       (s.name || '').toLowerCase().includes(q) ||
+      (s.traceId || '').toLowerCase().includes(q) ||
+      (s.spanId || '').toLowerCase().includes(q) ||
       Object.values(a).some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
     if (!hit) return false;
   }
