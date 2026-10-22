@@ -338,22 +338,30 @@ export abstract class BaseConnector implements AgentConnector {
    */
   protected injectTraceparentHeaders(headers: Record<string, string>): void {
     if (!this.traceContext?.propagateHeader) return;
-    // A user-configured `baggage` header (agent config / beforeRequest hook)
-    // must survive: the W3C baggage propagator REPLACES the header, so merge
-    // the user's entries back in afterwards (ours win on a key collision).
-    const userBaggage = Object.entries(headers).find(([k]) => k.toLowerCase() === 'baggage');
-    if (userBaggage) delete headers[userBaggage[0]]; // re-added below, merged
-    propagation.inject(otelContext.active(), headers);
-    if (userBaggage) {
-      const [userKey, userValue] = userBaggage;
-      const injectedKey = Object.keys(headers).find((k) => k.toLowerCase() === 'baggage');
-      if (!injectedKey) {
-        headers[userKey] = userValue; // nothing of ours to add — user's header untouched
-        return;
+    // A user-configured `baggage` header (agent config / beforeRequest hook) in
+    // ANY casing must survive: collect every variant's entries (later variants
+    // win within the user's own set), drop them, let the W3C propagator write
+    // its canonical header, then merge the user's entries back in — Agent
+    // Health's keys win on a collision. Exactly one baggage header remains.
+    const userEntries = new Map<string, string>();
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() !== 'baggage') continue;
+      for (const raw of v.split(',')) {
+        const entry = raw.trim();
+        if (!entry) continue;
+        const eq = entry.indexOf('=');
+        userEntries.set(eq === -1 ? entry : entry.slice(0, eq).trim(), entry);
       }
-      const ours = new Set(headers[injectedKey].split(',').map((e) => e.split('=')[0].trim()));
-      const kept = userValue.split(',').map((e) => e.trim()).filter((e) => e && !ours.has(e.split('=')[0].trim()));
-      if (kept.length) headers[injectedKey] = `${headers[injectedKey]},${kept.join(',')}`;
+      delete headers[k];
     }
+    propagation.inject(otelContext.active(), headers);
+    if (userEntries.size === 0) return;
+    const injectedKey = Object.keys(headers).find((k) => k.toLowerCase() === 'baggage') ?? 'baggage';
+    const injected = headers[injectedKey];
+    const ours = new Set((injected ?? '').split(',').map((e) => e.split('=')[0].trim()).filter(Boolean));
+    const kept = [...userEntries.entries()].filter(([key]) => !ours.has(key)).map(([, entry]) => entry);
+    const merged = [injected, ...kept].filter(Boolean).join(',');
+    if (merged) headers[injectedKey] = merged;
   }
+
 }

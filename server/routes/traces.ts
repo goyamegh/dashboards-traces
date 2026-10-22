@@ -86,7 +86,7 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         hasMore = result.hasMore || false;
         if (result.truncated) {
           // Never present a capped scan as the whole picture.
-          warning = `Results are partial: the ${backend} query hit its scan/row limit; narrow the time range or filters to see everything.`;
+          warning = `Results are partial: the ${backend} query hit a scan, row or time-window limit; narrow the time range or filters to see everything.`;
           warningCategory = 'unknown';
         }
       } catch (e: any) {

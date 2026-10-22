@@ -188,9 +188,10 @@ describe('FileObservabilityModule', () => {
         span({ traceId: 'tm', spanId: 't1', parentSpanId: 'root', name: 'execute_tool search_docs', startMs: Date.parse('2024-01-01T00:00:03Z'), attributes: { 'agent_health.run.id': 'run-m', 'gen_ai.tool.name': 'search_docs' } }),
       ]);
       const m = await mod.metrics.forRun('run-m');
-      expect(m).toMatchObject({ runId: 'run-m', traceId: 'tm', inputTokens: 300, outputTokens: 30, llmCalls: 2, toolCalls: 1, toolsUsed: ['search_docs'], status: 'success', correlatedBy: 'ids' });
+      // main's token math: every usage-bearing span is summed (root aggregate + both calls).
+      expect(m).toMatchObject({ runId: 'run-m', traceId: 'tm', inputTokens: 600, outputTokens: 60, llmCalls: 3, toolCalls: 1, toolsUsed: ['search_docs'], status: 'success', correlatedBy: 'ids' });
       const [known, unknown] = await mod.metrics.forRuns(['run-m', 'nope']);
-      expect(known.totalTokens).toBe(330);
+      expect(known.totalTokens).toBe(660);
       expect(unknown).toMatchObject({ runId: 'nope', totalTokens: 0, status: 'pending' });
     });
 
