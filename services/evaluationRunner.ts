@@ -450,6 +450,8 @@ export async function executeEvaluationRun(
                 ...(options?.context ? { context: options.context as any } : {}),
               };
               const doInvoke = () => invokeAgent(agentConfig, bedrockModelId, invocationTestCase, {
+                // Baggage id = the report id this case will be persisted under.
+                ...(placeholderRunId ? { correlationId: placeholderRunId } : {}),
                 registry: connectorRegistry,
                 ...(options?.env ? { env: options.env } : {}),
               });

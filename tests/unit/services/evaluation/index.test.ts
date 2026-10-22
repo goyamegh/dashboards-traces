@@ -838,4 +838,64 @@ describe('Evaluation Service Index', () => {
       expect(getRequest().connectorConfig).toBe(baseConfig); // same reference, no clone
     });
   });
+
+  describe('invokeAgent W3C baggage (agent_health.run.id — Strategy B over the wire)', () => {
+    // Real OpenTelemetry propagator — no mocks: the connector's propagation.inject()
+    // must emit a `baggage` header a downstream OTel SDK can read.
+    // (Baggage rides the OTel context, so a context manager must be active —
+    // in production NodeTracerProvider.register() installs both.)
+    let invokeAgent: any;
+    let otel: typeof import('@opentelemetry/api');
+    let core: typeof import('@opentelemetry/core');
+    let ctxManager: import('@opentelemetry/context-async-hooks').AsyncLocalStorageContextManager;
+
+    beforeEach(async () => {
+      jest.resetModules();
+      otel = await import('@opentelemetry/api');
+      core = await import('@opentelemetry/core');
+      const { AsyncLocalStorageContextManager } = await import('@opentelemetry/context-async-hooks');
+      ctxManager = new AsyncLocalStorageContextManager().enable();
+      otel.context.setGlobalContextManager(ctxManager);
+      otel.propagation.setGlobalPropagator(new core.W3CBaggagePropagator());
+      invokeAgent = (await import('@/services/evaluation')).invokeAgent;
+    });
+    afterEach(() => {
+      otel.propagation.disable();
+      otel.context.disable();
+      ctxManager.disable();
+    });
+
+    const registryCapturingHeaders = (echoRunId: string | null) => {
+      const headers: Record<string, string> = {};
+      const connector = {
+        type: 'mock',
+        execute: jest.fn().mockImplementation(async () => {
+          // What a REST connector does inside execute(): inject the active context.
+          otel.propagation.inject(otel.context.active(), headers);
+          return { trajectory: [], runId: echoRunId, rawEvents: [] };
+        }),
+      };
+      return { registry: { getForAgent: jest.fn().mockReturnValue(connector) }, headers };
+    };
+
+    it('sends the caller-supplied correlation id as baggage and never overrides the agent-returned runId', async () => {
+      const { registry, headers } = registryCapturingHeaders('agent-run-7');
+      const res = await invokeAgent(mockAgent, 'claude-3-sonnet', mockTestCase, { registry, correlationId: 'report-123' });
+      expect(headers.baggage).toBe('agent_health.run.id=report-123');
+      expect(res.runId).toBe('agent-run-7');
+    });
+
+    it('keeps runId null for an agent that echoes nothing (surrogate-key path stays intact)', async () => {
+      const { registry, headers } = registryCapturingHeaders(null);
+      const res = await invokeAgent(mockAgent, 'claude-3-sonnet', mockTestCase, { registry, correlationId: 'report-456' });
+      expect(headers.baggage).toBe('agent_health.run.id=report-456');
+      expect(res.runId).toBeNull();
+    });
+
+    it('mints a one-off id when the caller has none to offer', async () => {
+      const { registry, headers } = registryCapturingHeaders(null);
+      await invokeAgent(mockAgent, 'claude-3-sonnet', mockTestCase, { registry });
+      expect(headers.baggage).toMatch(/^agent_health\.run\.id=ah-.+$/); // uuid is mocked in this suite
+    });
+  });
 });
