@@ -69,7 +69,7 @@ export const TurnMeta: React.FC<{ turn: AskTurnState; thread?: AskThread }> = ({
   const parts: string[] = [];
   if (turn.firstTokenMs !== undefined) parts.push(`first token ${(turn.firstTokenMs / 1000).toFixed(1)}s`);
   if (turn.durationMs !== undefined) parts.push(`total ${(turn.durationMs / 1000).toFixed(1)}s`);
-  if (thread?.agent) parts.push(thread.agent.name);
+  if (thread?.model) parts.push(thread.model.replace(/^amazon-bedrock\//, ''));
   return <div className="text-[10px] text-muted-foreground/80" data-testid="ask-turn-meta">{parts.join(' · ')}</div>;
 };
 
@@ -83,7 +83,7 @@ export const TurnView: React.FC<{ turn: AskTurnState; thread?: AskThread }> = ({
       <div data-testid="ask-turn-answer"><AskMarkdown>{turn.answer}</AskMarkdown></div>
     ) : (
       <div className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="ask-turn-waiting">
-        <Loader2 size={12} className="animate-spin" /> {thread?.agent ? `${thread.agent.name} is reading the page data…` : 'Loading page data…'}
+        <Loader2 size={12} className="animate-spin" /> {thread?.prepared || thread?.sessionId ? 'Thinking…' : 'Reading the page data…'}
       </div>
     )}
     {turn.status === 'streaming' && turn.answer ? <Loader2 size={12} className="animate-spin text-muted-foreground" /> : null}
@@ -145,22 +145,30 @@ export const AskComposer: React.FC<{
   );
 };
 
-/** Floating chip anchored to the selection rect. */
-export const AskChip: React.FC<{ rect: { top: number; left: number; bottom: number; width: number }; label: string; onClick: () => void }> = ({ rect, label, onClick }) => {
+/**
+ * Floating chip(s) anchored to the selection rect. "Ask" always starts a new
+ * question about the selection; "Add to current question" appears ONLY while
+ * a thread is open in the panel and appends the selection to it.
+ */
+export const AskChip: React.FC<{
+  rect: { top: number; left: number; bottom: number; width: number };
+  onAsk: () => void;
+  onAddToCurrent?: () => void;
+}> = ({ rect, onAsk, onAddToCurrent }) => {
   const top = Math.max(8, rect.top - 34);
-  const left = Math.min(Math.max(8, rect.left + rect.width / 2 - 28), window.innerWidth - 120);
+  const left = Math.min(Math.max(8, rect.left + rect.width / 2 - 28), window.innerWidth - (onAddToCurrent ? 260 : 120));
+  const base = 'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs shadow-lg hover:opacity-90';
   return (
-    <button
-      type="button"
-      data-ask-ui
-      data-testid="ask-chip"
-      style={{ position: 'fixed', top, left, zIndex: 60 }}
-      className="inline-flex items-center gap-1 rounded-full bg-foreground text-background px-2.5 py-1 text-xs shadow-lg hover:opacity-90 animate-in fade-in zoom-in-95 duration-150"
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-    >
-      <span aria-hidden="true">✨</span> {label}
-    </button>
+    <div data-ask-ui data-testid="ask-chip-group" style={{ position: 'fixed', top, left, zIndex: 60 }} className="flex items-center gap-1 animate-in fade-in zoom-in-95 duration-150">
+      <button type="button" data-testid="ask-chip" className={`${base} bg-foreground text-background`} onMouseDown={(e) => e.preventDefault()} onClick={onAsk}>
+        <span aria-hidden="true">✨</span> Ask
+      </button>
+      {onAddToCurrent ? (
+        <button type="button" data-testid="ask-chip-add" className={`${base} border bg-background text-foreground`} onMouseDown={(e) => e.preventDefault()} onClick={onAddToCurrent} title="Attach this highlight to the question open in the assistant panel">
+          + Add to current question
+        </button>
+      ) : null}
+    </div>
   );
 };
 

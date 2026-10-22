@@ -151,7 +151,7 @@ export const askLinks = {
 // ============================================================================
 
 const SECTION_CHAR_CAP = 9_000;
-const TRAJECTORY_TAIL = 25;
+const TRAJECTORY_STEPS_MAX = 40;
 const COMPARE_RUNS_MAX = 6;
 
 function truncate(s: string, max: number): string {
@@ -168,15 +168,16 @@ function slimStep(step: TrajectoryStep, i: number) {
     i,
     type: s.type,
     toolName: s.toolName,
-    content: typeof s.content === 'string' ? s.content.slice(0, 400) : undefined,
-    toolInput: s.toolInput !== undefined ? JSON.stringify(s.toolInput).slice(0, 300) : undefined,
-    toolOutput: typeof s.toolOutput === 'string' ? s.toolOutput.slice(0, 300) : undefined,
+    content: typeof s.content === 'string' ? s.content.slice(0, 600) : undefined,
+    toolArgs: s.toolArgs !== undefined ? JSON.stringify(s.toolArgs).slice(0, 400) : undefined,
+    toolOutput: typeof s.toolOutput === 'string' ? s.toolOutput.slice(0, 400) : s.toolOutput !== undefined ? JSON.stringify(s.toolOutput).slice(0, 400) : undefined,
   };
 }
 
 function slimReport(r: any) {
   const traj: TrajectoryStep[] = Array.isArray(r.trajectory) ? r.trajectory : [];
-  const tail = traj.slice(-TRAJECTORY_TAIL);
+  // Whole trajectory when it fits; otherwise the tail (how the run ended).
+  const tail = traj.slice(-TRAJECTORY_STEPS_MAX);
   const offset = traj.length - tail.length;
   return {
     id: r.id,
@@ -200,7 +201,8 @@ function slimReport(r: any) {
     experimentRunId: r.experimentRunId,
     experimentId: r.experimentId,
     trajectoryTotalSteps: traj.length,
-    trajectoryTail: tail.map((s, i) => slimStep(s, offset + i)),
+    trajectoryIncluded: offset === 0 ? 'complete' : `last ${tail.length} of ${traj.length} steps`,
+    trajectory: tail.map((s, i) => slimStep(s, offset + i)),
   };
 }
 
@@ -236,7 +238,7 @@ export async function buildAskSnapshot(storage: IStorageModule, refsIn: AskRefs)
         sections.push(
           `### Report ${report.id} (${report.passFailStatus ?? report.status})\n` +
             `Link: ${askLinks.report(refs.benchmarkId, refs.runId, report.id)}\n` +
-            json(slimReport(report))
+            json(slimReport(report), SECTION_CHAR_CAP * 2)
         );
       } else {
         sections.push(`### Report ${refs.reportId}\n_Not found in storage._`);
@@ -254,18 +256,20 @@ export async function buildAskSnapshot(storage: IStorageModule, refsIn: AskRefs)
         loaded.push(`run ${run.id}`);
         if (!refs.benchmarkId && run.benchmarkId) refs.benchmarkId = run.benchmarkId;
         const names = new Map((run.testCaseSnapshots ?? []).map((s) => [s.id, s.name]));
-        const results = Object.entries(run.results ?? {}).map(([tcId, r]) => ({
-          testCaseId: tcId,
-          testCase: names.get(tcId),
-          reportId: r.reportId,
-          status: r.status,
-          passFailStatus: (r as any).passFailStatus,
-          error: r.error,
-          reportLink: r.reportId ? askLinks.report(refs.benchmarkId ?? run.benchmarkId, run.id, r.reportId) : undefined,
-        }));
+        // Compact per-case table: name + verdict. Report ids only for the
+        // non-passing cases (the ones a question is likely about); the rest
+        // are reachable via get_evaluation_run(runId).results.
+        const entries = Object.entries(run.results ?? {});
+        const verdict = (r: any) => String(r.passFailStatus ?? r.status);
+        const results = entries.map(([tcId, r]) => `${names.get(tcId) ?? tcId}: ${verdict(r)}`);
+        const notPassed = entries
+          .filter(([, r]) => verdict(r) !== 'passed')
+          .slice(0, 25)
+          .map(([tcId, r]) => ({ testCase: names.get(tcId) ?? tcId, testCaseId: tcId, status: verdict(r), reportId: r.reportId, error: r.error }));
+        const runLink = askLinks.run(refs.benchmarkId ?? run.benchmarkId, run.id);
         sections.push(
           `### Run ${run.id} — "${run.name}" (${run.status})\n` +
-            `Link: ${askLinks.run(refs.benchmarkId ?? run.benchmarkId, run.id)}\n` +
+            `Link: ${runLink} — a case's report opens at ${runLink}?reportId=<reportId>\n` +
             json({
               id: run.id,
               name: run.name,
@@ -281,8 +285,9 @@ export async function buildAskSnapshot(storage: IStorageModule, refsIn: AskRefs)
               stats: run.stats,
               judgeFailureSummary: run.judgeFailureSummary,
               benchmarkId: run.benchmarkId,
-              results,
-            })
+              resultsByCase: results,
+              notPassed,
+            }, 6_000)
         );
       } else {
         sections.push(`### Run ${refs.runId}\n_Not found as an evaluation run (it may be a legacy benchmark run id)._`);
@@ -393,7 +398,7 @@ export async function buildAskSnapshot(storage: IStorageModule, refsIn: AskRefs)
       const b = await storage.benchmarks.getById(refs.benchmarkId);
       if (b) {
         loaded.push(`benchmark ${b.id}`);
-        const runs = (b.runs ?? []).slice(-15).map((r: any) => ({
+        const runs = (b.runs ?? []).slice(-8).map((r: any) => ({
           id: r.id,
           name: r.name,
           createdAt: r.createdAt,
@@ -411,7 +416,7 @@ export async function buildAskSnapshot(storage: IStorageModule, refsIn: AskRefs)
               testCaseCount: b.testCaseIds?.length ?? 0,
               totalRuns: b.runs?.length ?? 0,
               recentRuns: runs,
-            }, 6_000)
+            }, 3_000)
         );
       }
     } catch (err: any) {
@@ -435,13 +440,9 @@ export interface AskPromptInput {
   selections: AskSelection[];
   page: AskPageContext;
   refs: AskRefs;
+  /** Empty for follow-ups on the same page (pi already has the snapshot in context). */
   snapshotMarkdown: string;
-  /** Earlier turns of this ask session (for one-shot connector agents). */
-  history?: Array<{ question: string; answer: string }>;
-  /** Where the agent can reach this server's read-only API (tool-using CLIs). */
-  serverUrl: string;
-  /** Whether the agent has our in-process tools (builtin) or general CLI tools. */
-  toolMode: 'builtin-tools' | 'cli-tools';
+  isFollowUp?: boolean;
 }
 
 export const ASK_ANSWER_RULES = `Answer rules:
@@ -450,14 +451,10 @@ export const ASK_ANSWER_RULES = `Answer rules:
 - End with a one-line "Looked at:" list naming the entities you used (report / run / test case / spans), each as a Markdown link using PATH routes exactly as given (e.g. /evaluations/benchmarks/<b>/runs/<r>/inspect?reportId=<id>). Never use hash routes (/#/...).
 - If the data needed is not in the snapshot and you cannot fetch it, say exactly what is missing — do not ask the user to paste data.`;
 
-export function buildAskSystemPrompt(input: Pick<AskPromptInput, 'serverUrl' | 'toolMode'>): string {
-  const tools =
-    input.toolMode === 'builtin-tools'
-      ? `You have read-only tools over this Agent Health server: get_report(reportId), get_evaluation_run(runId), get_test_case(testCaseId), get_benchmark(benchmarkId), query_spans({traceId?, runId?, sessionId?, nameFilter?}). Use them whenever the snapshot lacks what the question needs (e.g. the full trajectory, another case's report, the spans of a trace). Do not call tools for data already in the snapshot.`
-      : `You are a coding-agent CLI with your usual tools. The Agent Health server's read-only REST API is at ${input.serverUrl} — use it (e.g. \`curl -s ${input.serverUrl}/api/storage/runs/<reportId>\`, \`/api/storage/evaluation-runs/<runId>\`, \`/api/storage/test-cases/<id>\`, \`/api/storage/benchmarks/<id>?fields=full\`, \`POST /api/traces {"traceId": "..."}\`) when the snapshot lacks what the question needs. Never modify anything (no POST/PUT/DELETE except POST /api/traces, which is a read).`;
+export function buildAskSystemPrompt(): string {
   return `You are the Agent Health assistant. Agent Health evaluates AI agents: a benchmark groups test cases; an evaluation run executes an agent on them; each test case produces a report with the agent's trajectory (tool calls + responses), an LLM-judge verdict (passFailStatus, metrics, llmJudgeReasoning) and optionally OpenTelemetry spans (gen_ai.* attributes). The user highlighted text in the web UI and asked a question about it.
 
-${tools}
+You have READ-ONLY tools over this Agent Health server: get_report(reportId), get_evaluation_run(runId), get_test_case(testCaseId), get_benchmark(benchmarkId), query_spans({traceId?, runId?, sessionId?, nameFilter?}). The data snapshot in the first message already contains the page's own report / run / test case / benchmark (a report's trajectory is complete unless marked otherwise) — answer from it directly and do NOT re-fetch those. Questions about a verdict ("why did this fail", "what does this score mean") are answered from the judge reasoning and trajectory in the snapshot WITHOUT any tool call. Call tools only for data the snapshot lacks: another case's report, a run that isn't on the page, or — only when the question is about spans, latency, tokens or what the agent actually executed — query_spans with the report's traceId.
 
 ${ASK_ANSWER_RULES}`;
 }
@@ -484,12 +481,7 @@ export function buildAskUserPrompt(input: AskPromptInput): string {
     );
   }
   if (input.snapshotMarkdown) parts.push(input.snapshotMarkdown);
-  if (input.history?.length) {
-    parts.push(
-      `## Earlier in this ask session\n` +
-        input.history.map((h) => `**Q:** ${h.question}\n**A:** ${h.answer.slice(0, 2_000)}`).join('\n\n')
-    );
-  }
+  else if (input.isFollowUp) parts.push('_(Follow-up: the data snapshot from earlier in this conversation still applies.)_');
   parts.push(`## Question\n${input.question.trim()}`);
   return parts.join('\n\n');
 }

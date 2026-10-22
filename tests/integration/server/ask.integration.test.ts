@@ -4,139 +4,135 @@
  */
 
 /**
- * Integration — `POST /api/ask` (highlight & ask prototype) against a RUNNING
- * server at AH_PORT (file storage expected; see tests/integration/README).
+ * Integration — the Agent Health assistant (`/api/ask`) through a REAL server
+ * process that this suite boots itself (file storage, temp cwd, port
+ * AH_ASK_TEST_PORT or 5382), so it can RESTART the server between a question
+ * and its follow-up and prove the thread resumes from the pi session file.
  *
- *   - validation + agent resolution errors are plain 4xx JSON (no stream)
- *   - the real answering path: a report created through the storage API is
- *     the page context; the answer MUST quote data only the report holds.
- *     Agent: the server's configured default (`assistant.agentKey`) — in the
- *     prototype test server that is the REAL `pi` CLI (subprocess connector);
- *     elsewhere the built-in pi SDK. Skipped when neither credentials nor the
- *     `pi` binary are available (reported, never silently green).
- *   - sessions are persisted: GET /api/ask/sessions(/:id) show the turn.
+ *   - validation errors are plain 400 JSON (no stream)
+ *   - prepare → ask: the answer is grounded in a report created through the
+ *     storage API (a sentinel only that report contains)
+ *   - the pi session file exists in the dedicated dir with our custom entries
+ *   - server restart → follow-up with the same sessionId recalls the earlier
+ *     answer (history came from the JSONL, the snapshot is NOT re-sent)
+ *   - GET /api/ask/sessions(/:id) list the thread
+ *
+ * Needs `server/dist` built and a credentialed pi model (Bedrock profile) —
+ * skipped with a loud warning otherwise, never silently green.
  */
 
-import { execSync } from 'child_process';
-import { getTestBackendUrl } from '@/tests/integration/testConfig';
-import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
+import { spawn, type ChildProcess } from 'child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 
-const BASE_URL = getTestBackendUrl();
-const tracker = createTestDataTracker();
+const REPO = process.cwd();
+const PORT = process.env.AH_ASK_TEST_PORT || '5382';
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+const DIST = resolve(REPO, 'server/dist/index.js');
 
-async function isServerRunning(): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
-  } catch {
-    return false;
+let cwd: string;
+let child: ChildProcess | null = null;
+
+async function waitHealthy(ms = 60_000): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try {
+      const r = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) return true;
+    } catch { /* not yet */ }
+    await new Promise((r) => setTimeout(r, 500));
   }
+  return false;
 }
 
-interface SseCollected {
-  meta?: any;
-  deltas: string[];
-  tools: any[];
-  done?: any;
-  error?: string;
-}
-
-async function postAsk(body: unknown, timeoutMs = 240_000): Promise<{ status: number; json?: any; sse?: SseCollected }> {
-  const res = await fetch(`${BASE_URL}/api/ask`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+async function startServer(): Promise<boolean> {
+  // Refuse to run against a stranger: the port must be free before we boot.
+  const taken = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.ok).catch(() => false);
+  if (taken) throw new Error(`${BASE_URL} is already serving something — pick another AH_ASK_TEST_PORT`);
+  child = spawn(process.execPath, ['--import', 'tsx', DIST], {
+    cwd,
+    env: {
+      ...process.env,
+      PORT, AH_PORT: PORT, AGENT_HEALTH_PORT: PORT,
+      AGENT_HEALTH_STORAGE: 'file',
+      BENCHMARK_RUN_RECOVERY_DISABLED: '1', EVALUATION_RUN_RECOVERY_DISABLED: '1',
+      TRACE_POLL_MAX_ATTEMPTS: '1', NODE_ENV: 'production',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  if (!res.headers.get('content-type')?.includes('text/event-stream')) {
-    return { status: res.status, json: await res.json().catch(() => undefined) };
-  }
-  const collected: SseCollected = { deltas: [], tools: [] };
-  const text = await res.text();
-  for (const chunk of text.split('\n\n')) {
+  let log = '';
+  child.stdout?.on('data', (d) => { log += d.toString(); });
+  child.stderr?.on('data', (d) => { log += d.toString(); });
+  const ok = await waitHealthy();
+  if (!ok) console.warn('ask server did not become healthy:\n', log.slice(-2000));
+  return ok;
+}
+
+async function stopServer(): Promise<void> {
+  const c = child;
+  child = null;
+  if (!c || c.exitCode !== null) return;
+  await new Promise<void>((done) => {
+    c.once('exit', () => done());
+    c.kill('SIGTERM'); // ONLY our own child, by handle.
+    setTimeout(() => { if (c.exitCode === null) c.kill('SIGKILL'); }, 5000);
+  });
+}
+
+interface Sse { meta?: any; deltas: string[]; tools: any[]; done?: any; error?: string }
+async function postAsk(body: unknown): Promise<{ status: number; json?: any; sse?: Sse }> {
+  const res = await fetch(`${BASE_URL}/api/ask`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(240_000),
+  });
+  if (!res.headers.get('content-type')?.includes('text/event-stream')) return { status: res.status, json: await res.json().catch(() => undefined) };
+  const sse: Sse = { deltas: [], tools: [] };
+  for (const chunk of (await res.text()).split('\n\n')) {
     const line = chunk.split('\n').find((l) => l.startsWith('data: '));
     if (!line) continue;
     const ev = JSON.parse(line.slice(6));
-    if (ev.type === 'meta') collected.meta = ev;
-    else if (ev.type === 'delta') collected.deltas.push(ev.content);
-    else if (ev.type === 'tool') collected.tools.push(ev);
-    else if (ev.type === 'done') collected.done = ev;
-    else if (ev.type === 'error') collected.error = ev.error;
+    if (ev.type === 'meta') sse.meta = ev;
+    else if (ev.type === 'delta') sse.deltas.push(ev.content);
+    else if (ev.type === 'tool') sse.tools.push(ev);
+    else if (ev.type === 'done') sse.done = ev;
+    else if (ev.type === 'error') sse.error = ev.error;
   }
-  return { status: res.status, sse: collected };
+  return { status: res.status, sse };
 }
 
-describe('POST /api/ask (highlight & ask)', () => {
-  let serverRunning = false;
+const canRun = existsSync(DIST);
+
+describe('Agent Health assistant — /api/ask against a self-booted server', () => {
   beforeAll(async () => {
-    serverRunning = await isServerRunning();
-    if (!serverRunning) console.warn('Server not running at', BASE_URL, '- skipping ask integration tests');
-  });
-  afterAll(async () => { await tracker.cleanup(); });
+    if (!canRun) { console.warn('server/dist not built — skipping ask integration'); return; }
+    cwd = mkdtempSync(join(tmpdir(), 'ask-proto-int-'));
+    symlinkSync(resolve(REPO, 'node_modules'), join(cwd, 'node_modules'));
+    writeFileSync(join(cwd, 'package.json'), '{"name":"ask-int","private":true,"type":"module"}');
+    expect(await startServer()).toBe(true);
+  }, 90_000);
 
-  it('400s on a malformed body without opening a stream', async () => {
-    if (!serverRunning) return;
-    const r1 = await postAsk({ pageContext: { route: '/x' } });
-    expect(r1.status).toBe(400);
-    expect(r1.json.error).toMatch(/question is required/);
-    const r2 = await postAsk({ question: 'q', pageContext: {} });
-    expect(r2.status).toBe(400);
-    expect(r2.json.error).toMatch(/pageContext.route/);
-    const r3 = await postAsk({ question: 'q', pageContext: { route: '/x' }, selections: [{ nope: 1 }] });
-    expect(r3.status).toBe(400);
-  });
+  afterAll(async () => {
+    await stopServer();
+    if (cwd) rmSync(cwd, { recursive: true, force: true }); // the temp cwd holds every doc this suite created
+  }, 30_000);
 
-  it('400s with a clear message for an unknown or non-chat agentKey', async () => {
-    if (!serverRunning) return;
-    const r = await postAsk({ question: 'q', pageContext: { route: '/' }, agentKey: 'definitely-not-configured' });
-    expect(r.status).toBe(400);
-    expect(r.json.code).toBe('not-found');
-    expect(r.json.error).toMatch(/"definitely-not-configured" is not in agents\[\]/);
-
-    // Any configured agent that is NOT chat-capable must be rejected by name.
-    const agents = await fetch(`${BASE_URL}/api/agents`).then((x) => x.json()).catch(() => null);
-    const list: any[] = agents?.agents ?? agents ?? [];
-    const rest = list.find((a) => a.connectorType && !['claude-code', 'kiro', 'pi'].includes(a.connectorType));
-    if (rest) {
-      const r2 = await postAsk({ question: 'q', pageContext: { route: '/' }, agentKey: rest.key });
-      expect(r2.status).toBe(400);
-      expect(r2.json.code).toBe('unsupported-connector');
-      expect(r2.json.error).toContain(`connector "${rest.connectorType}"`);
-    }
+  it('400s on malformed bodies without opening a stream', async () => {
+    if (!canRun) return;
+    expect((await postAsk({ pageContext: { route: '/x' } })).json?.error).toMatch(/question is required/);
+    expect((await postAsk({ question: 'q', pageContext: {} })).status).toBe(400);
+    expect((await postAsk({ question: 'q', pageContext: { route: '/x' }, selections: [{ nope: 1 }] })).status).toBe(400);
+    const prep = await fetch(`${BASE_URL}/api/ask/prepare`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    expect(prep.status).toBe(400);
   });
 
-  it('GET /api/ask/agents lists the builtin first and flags the configured default', async () => {
-    if (!serverRunning) return;
-    const data = await fetch(`${BASE_URL}/api/ask/agents`).then((r) => r.json());
-    expect(data.agents[0]).toMatchObject({ key: 'builtin-pi', kind: 'builtin' });
-    expect(data.agents.filter((a: any) => a.isDefault)).toHaveLength(1);
-    for (const a of data.agents.slice(1)) expect(['claude-code', 'kiro', 'pi']).toContain(a.connectorType);
-  });
-
-  it('answers a question about a REAL report grounded in its stored judge reasoning, and persists the session', async () => {
-    if (!serverRunning) return;
-    const agentsInfo = await fetch(`${BASE_URL}/api/ask/agents`).then((r) => r.json());
-    const def = agentsInfo.agents.find((a: any) => a.isDefault);
-    const piOnPath = (() => { try { execSync('pi --version', { stdio: 'pipe', timeout: 5000 }); return true; } catch { return false; } })();
-    if (def?.connectorType === 'pi' && !piOnPath) {
-      console.warn('SKIP: default ask agent is the pi CLI but `pi` is not on PATH');
-      return;
-    }
-
-    // A report whose judge reasoning carries a sentinel only this doc contains.
+  it('prepare → grounded answer → pi session file → restart → follow-up resumes the same pi session', async () => {
+    if (!canRun) return;
     const sentinel = `sentinel-${Date.now().toString(36)}`;
-    const tcRes = await fetch(`${BASE_URL}/api/storage/test-cases`, {
+    const tc = await fetch(`${BASE_URL}/api/storage/test-cases`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: uniqueTestName('ask-int'), description: 'ask integration', labels: ['category:RCA', 'difficulty:Easy'],
-        category: 'RCA', difficulty: 'Easy', initialPrompt: 'Why is checkout slow?', context: [],
-        expectedOutcomes: ['Names the slow dependency'],
-      }),
-    });
-    expect(tcRes.ok).toBe(true);
-    const tc = await tcRes.json();
-    tracker.testCase(tc.id);
-    const repRes = await fetch(`${BASE_URL}/api/storage/runs`, {
+      body: JSON.stringify({ name: `ask-int-${sentinel}`, description: 'ask integration', labels: ['category:RCA', 'difficulty:Easy'], category: 'RCA', difficulty: 'Easy', initialPrompt: 'Why is checkout slow?', context: [], expectedOutcomes: ['Names the slow dependency'] }),
+    }).then((r) => r.json());
+    const report = await fetch(`${BASE_URL}/api/storage/runs`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         testCaseId: tc.id, testCaseVersion: 1, agentKey: 'demo', agentName: 'Demo agent', modelId: 'demo', status: 'completed',
@@ -150,46 +146,61 @@ describe('POST /api/ask (highlight & ask)', () => {
         ],
         timestamp: new Date().toISOString(),
       }),
-    });
-    expect(repRes.ok).toBe(true);
-    const report = (await repRes.json());
+    }).then((r) => r.json());
     const reportId: string = report.id ?? report.run?.id;
-    tracker.run(reportId);
+    const pageContext = { route: `/runs/${reportId}`, title: 'Run details' };
+    const selections = [{ text: 'Outcome not achieved.' }];
 
-    const route = `/runs/${reportId}`;
-    const r = await postAsk({
-      question: 'In one or two sentences: which dependency does the judge say was actually slow, and did the agent pass?',
-      selections: [{ text: 'Outcome not achieved.' }],
-      pageContext: { route, title: 'Run details' },
-      variant: 'integration-test',
-    });
-    expect(r.status).toBe(200);
-    const sse = r.sse!;
-    if (sse.error && /no credentialed model|Not logged in|credentials|ExpiredToken/i.test(sse.error)) {
-      console.warn('SKIP (no LLM credentials for the ask agent):', sse.error);
-      return;
+    // prepare (what the UI does when the chip is clicked)
+    const prepRes = await fetch(`${BASE_URL}/api/ask/prepare`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageContext, selections }) });
+    if (prepRes.status === 500) {
+      const e = (await prepRes.json()).error as string;
+      if (/no credentialed model|credential|ExpiredToken/i.test(e)) { console.warn('SKIP (no LLM credentials):', e); return; }
     }
-    expect(sse.error).toBeUndefined();
-    expect(sse.meta.agent.key).toBe(def.key);
-    expect(sse.meta.refs).toMatchObject({ reportId, testCaseId: tc.id });
-    expect(sse.meta.loaded).toEqual(expect.arrayContaining([`report ${reportId}`, `test case ${tc.id}`]));
-    expect(sse.done).toBeDefined();
-    const answer: string = sse.done.answer;
-    // Grounded: the sentinel exists ONLY in the stored report's judge reasoning.
-    expect(answer).toContain(sentinel);
-    expect(answer).toMatch(/fail|did not pass|not pass/i);
-    expect(sse.deltas.join('').length).toBeGreaterThan(0);
-    expect(typeof sse.done.durationMs).toBe('number');
+    expect(prepRes.ok).toBe(true);
+    const prep = await prepRes.json();
+    expect(prep.sessionId).toMatch(/^ask-/);
+    expect(prep.loaded).toEqual(expect.arrayContaining([`report ${reportId}`, `test case ${tc.id}`]));
 
-    // Persisted session with the turn, answer and timings; listed newest-first and filterable by route.
-    const session = await fetch(`${BASE_URL}/api/ask/sessions/${sse.meta.sessionId}`).then((x) => x.json());
-    expect(session.session.turns).toHaveLength(1);
-    expect(session.session.turns[0]).toMatchObject({ answer, question: expect.stringContaining('which dependency') });
-    expect(session.session.selections[0].text).toBe('Outcome not achieved.');
-    expect(session.session.page.route).toBe(route);
-    const list = await fetch(`${BASE_URL}/api/ask/sessions?route=${encodeURIComponent(route)}`).then((x) => x.json());
-    expect(list.sessions.map((s: any) => s.id)).toContain(sse.meta.sessionId);
-    expect(list.sessions[0]).toMatchObject({ firstSelection: 'Outcome not achieved.', turnCount: 1 });
-    expect(await fetch(`${BASE_URL}/api/ask/sessions/does-not-exist`).then((x) => x.status)).toBe(404);
-  }, 300_000);
+    const first = await postAsk({ question: 'In one or two sentences: which dependency does the judge say was actually slow, and did the agent pass?', selections, pageContext, sessionId: prep.sessionId });
+    expect(first.status).toBe(200);
+    if (first.sse!.error && /no credentialed model|credential|ExpiredToken|Throttling/i.test(first.sse!.error)) { console.warn('SKIP:', first.sse!.error); return; }
+    expect(first.sse!.error).toBeUndefined();
+    expect(first.sse!.meta).toMatchObject({ sessionId: prep.sessionId, prepared: true, agent: { key: 'agent-health-assistant' } });
+    const answer1: string = first.sse!.done.answer;
+    expect(answer1).toContain(sentinel);
+    expect(answer1).toMatch(/fail|did not pass|not pass/i);
+
+    // The thread is a pi session file in OUR dir, with our custom entries.
+    const dir = join(cwd, '.agent-health', 'ask-sessions');
+    const files = readdirSync(dir).filter((f) => f.endsWith(`_${prep.sessionId}.jsonl`));
+    expect(files).toHaveLength(1);
+    const lines = readFileSync(join(dir, files[0]), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines[0]).toMatchObject({ type: 'session', id: prep.sessionId });
+    expect(lines.some((l) => l.type === 'custom' && l.customType === 'agent-health.ask' && l.data.page.route === pageContext.route)).toBe(true);
+    expect(lines.some((l) => l.type === 'custom' && l.customType === 'agent-health.ask.turn' && l.data.answer === answer1)).toBe(true);
+    expect(lines.filter((l) => l.type === 'message' && l.message.role === 'assistant').length).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(process.env.HOME ?? '/nonexistent', '.pi', 'agent', 'sessions', cwd.replace(/[^a-zA-Z0-9]/g, '-')))).toBe(false);
+
+    // RESTART. In-memory state is gone; only the JSONL remains.
+    await stopServer();
+    expect(await startServer()).toBe(true);
+
+    const second = await postAsk({ question: 'Repeat, verbatim, the exact dependency name you gave in your previous answer (the one containing "sentinel"). Output only that name.', selections: [], pageContext, sessionId: prep.sessionId });
+    expect(second.sse!.error).toBeUndefined();
+    expect(second.sse!.meta.sessionId).toBe(prep.sessionId);
+    expect(second.sse!.meta.prepared).toBe(false);
+    expect(second.sse!.meta.loaded).toEqual([]); // no snapshot re-sent: history came from the pi session file
+    expect(second.sse!.done.answer).toContain(sentinel);
+
+    const detail = await fetch(`${BASE_URL}/api/ask/sessions/${prep.sessionId}`).then((r) => r.json());
+    expect(detail.session.turns).toHaveLength(2);
+    expect(detail.session.turns[0].answer).toBe(answer1);
+    expect(detail.session.page.route).toBe(pageContext.route);
+    const list = await fetch(`${BASE_URL}/api/ask/sessions?route=${encodeURIComponent(pageContext.route)}`).then((r) => r.json());
+    expect(list.dir).toBe(dir);
+    expect(list.sessions.map((s: any) => s.id)).toContain(prep.sessionId);
+    expect(list.sessions[0]).toMatchObject({ firstSelection: 'Outcome not achieved.', turnCount: 2 });
+    expect(await fetch(`${BASE_URL}/api/ask/sessions/does-not-exist`).then((r) => r.status)).toBe(404);
+  }, 400_000);
 });

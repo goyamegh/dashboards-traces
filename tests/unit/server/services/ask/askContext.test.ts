@@ -144,9 +144,10 @@ describe('buildAskSnapshot', () => {
     expect(snap.markdown).toContain('/evaluations/benchmarks/bench-1/runs/eval-run-2/inspect?reportId=report-3');
     expect(snap.markdown).toContain('Fact precision 12.5/100');
     expect(snap.markdown).toContain('"trajectoryTotalSteps": 40');
+    expect(snap.markdown).toContain('"trajectoryIncluded": "complete"');
     expect(snap.markdown).toContain('"i": 39');
-    expect(snap.markdown).not.toContain('"i": 5,'); // only the tail is inlined
-    expect(snap.markdown).toContain('"testCase": "vocab_649"');
+    expect(snap.markdown).toContain('"vocab_649: failed"');
+    expect(snap.markdown).toContain('"testCase": "vocab_649"'); // notPassed carries the report id
     expect(snap.markdown).toContain('returns 474');
     expect(snap.markdown).not.toContain('/#/');
   });
@@ -206,31 +207,30 @@ describe('buildAskSnapshot', () => {
 });
 
 describe('prompt assembly', () => {
-  it('system prompt describes the builtin tools and forbids hash routes', () => {
-    const p = buildAskSystemPrompt({ serverUrl: 'http://localhost:5381', toolMode: 'builtin-tools' });
-    expect(p).toContain('get_report(reportId)');
-    expect(p).toContain('query_spans');
+  it('system prompt names exactly the read-only tools, tells the model the snapshot is complete, and forbids hash routes', () => {
+    const p = buildAskSystemPrompt();
+    for (const t of ['get_report(reportId)', 'get_evaluation_run(runId)', 'get_test_case(testCaseId)', 'get_benchmark(benchmarkId)', 'query_spans(']) expect(p).toContain(t);
+    expect(p).toContain('READ-ONLY');
+    expect(p).toContain('do NOT re-fetch those');
     expect(p).toContain('Never use hash routes');
+    expect(p).not.toMatch(/bash|curl|shell/i);
   });
 
-  it('CLI prompt points the agent at the read-only REST API', () => {
-    const p = buildAskSystemPrompt({ serverUrl: 'http://localhost:5381', toolMode: 'cli-tools' });
-    expect(p).toContain('curl -s http://localhost:5381/api/storage/runs/<reportId>');
-    expect(p).toContain('Never modify anything');
+  it('follow-ups on the same page carry no snapshot (pi keeps it in the session context)', () => {
+    const p = buildAskUserPrompt({ question: 'And then?', selections: [], page: { route: '/x' }, refs: {}, snapshotMarkdown: '', isFollowUp: true });
+    expect(p).toContain('Follow-up: the data snapshot from earlier in this conversation still applies');
+    expect(p.trim().endsWith('## Question\nAnd then?')).toBe(true);
   });
 
-  it('user prompt quotes selections, ids, snapshot, history and the question in order', () => {
+  it('user prompt quotes selections, ids, snapshot and the question in order', () => {
     const p = buildAskUserPrompt({
       question: 'Why?',
       selections: [{ text: 'line one\nline two', nearbyText: 'surrounding paragraph with line one' }],
       page: { route: '/compare/b?runs=x,y', title: 'Compare' },
       refs: { benchmarkId: 'b', comparisonRunIds: ['x', 'y'] },
       snapshotMarkdown: '## Data snapshot\nstuff',
-      history: [{ question: 'earlier?', answer: 'earlier answer' }],
-      serverUrl: 'http://localhost:1',
-      toolMode: 'builtin-tools',
     });
-    const order = ['## Page', 'benchmarkId=b; comparisonRunIds=x,y', '> line one\n> line two', 'Surrounding text', '## Data snapshot', 'earlier answer', '## Question\nWhy?'];
+    const order = ['## Page', 'benchmarkId=b; comparisonRunIds=x,y', '> line one\n> line two', 'Surrounding text', '## Data snapshot', '## Question\nWhy?'];
     let last = -1;
     for (const needle of order) {
       const i = p.indexOf(needle);

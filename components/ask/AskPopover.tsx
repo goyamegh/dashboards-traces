@@ -4,8 +4,9 @@
  */
 
 /**
- * Variant 1 — popover: select text → "Ask" chip → composer → the answer streams
- * in a card anchored to the selection; follow-ups stay in the same card.
+ * Popover — the entry point: select text → "Ask" chip → composer → the answer
+ * streams in a card anchored to the selection; follow-ups stay in the same
+ * card; "Open in panel" continues the same pi session in the docked panel.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -62,17 +63,17 @@ export const AskPopover: React.FC<AskPopoverProps> = ({ anchor, thread, onAsk, o
       className="rounded-xl border bg-background shadow-2xl flex flex-col max-h-[70vh] animate-in fade-in zoom-in-95 duration-150"
     >
       <div className="flex items-center justify-between border-b px-3 py-1.5">
-        <span className="text-xs font-semibold flex items-center gap-1 min-w-0"><span aria-hidden="true">✨</span> Ask{thread.agent ? <span className="font-normal text-muted-foreground truncate max-w-[200px]" title={thread.agent.name}> · {thread.agent.name}</span> : null}</span>
+        <span className="text-xs font-semibold flex items-center gap-1 min-w-0"><span aria-hidden="true">✨</span> Ask <span className="font-normal text-muted-foreground truncate max-w-[220px]">· Agent Health assistant</span></span>
         <div className="flex items-center gap-1">
-          <button type="button" onClick={onOpenInPanel} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] hover:bg-accent" title="Open in Assistant panel" data-testid="ask-open-in-panel">
-            <PanelRightOpen size={12} /> Open in Assistant
+          <button type="button" onClick={onOpenInPanel} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] hover:bg-accent" title="Continue this question in the assistant panel" data-testid="ask-open-in-panel">
+            <PanelRightOpen size={12} /> Open in panel
           </button>
           <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 hover:bg-accent" data-testid="ask-popover-close"><X size={14} /></button>
         </div>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-3">
         {thread.selections.map((s) => <SelectionQuote key={s.text} selection={s} compact />)}
-        {thread.loaded?.length ? <div className="text-[10px] text-muted-foreground" data-testid="ask-loaded">Context: {thread.loaded.join(' · ')}</div> : null}
+        {thread.loaded?.length ? <div className="text-[10px] text-muted-foreground" data-testid="ask-loaded">Context{thread.prepared && !thread.turns.length ? ' ready' : ''}: {thread.loaded.join(' · ')}</div> : thread.preparing ? <div className="text-[10px] text-muted-foreground" data-testid="ask-preparing">Reading the page data…</div> : null}
         {thread.turns.map((turn) => <TurnView key={turn.id} turn={turn} thread={thread} />)}
       </div>
       <div className="border-t px-3 py-2">

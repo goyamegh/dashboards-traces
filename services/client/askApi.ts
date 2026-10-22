@@ -23,18 +23,18 @@ export interface AskRequestBody {
   question: string;
   selections?: AskSelection[];
   pageContext: AskPageContext;
-  agentKey?: string;
+  /** Continue an existing ask session (follow-up) or one returned by prepareAsk(). */
   sessionId?: string;
-  variant?: string;
 }
 
 export interface AskMetaEvent {
   type: 'meta';
   sessionId: string;
   turnId: string;
-  agent: { key: string; name: string; connectorType: string };
+  agent: { key: string; name: string; model: string };
   refs: Record<string, string | string[] | undefined>;
   loaded: string[];
+  prepared: boolean;
 }
 export interface AskToolEvent { type: 'tool'; name: string; status: 'start' | 'end'; isError?: boolean }
 export interface AskDoneEvent { type: 'done'; answer: string; durationMs: number; firstTokenMs?: number; toolCalls: string[] }
@@ -45,26 +45,24 @@ export interface AskStreamHandlers {
   onTool?(tool: AskToolEvent): void;
 }
 
-export interface AskAgentInfo {
-  key: string;
-  name: string;
-  connectorType: string;
-  isDefault: boolean;
-  kind: 'builtin' | 'connector';
+export interface AskPrepared {
+  sessionId: string;
+  refs: Record<string, string | string[] | undefined>;
+  loaded: string[];
+  model: string;
 }
 
 export interface AskSessionSummary {
   id: string;
+  path: string;
   createdAt: string;
   updatedAt: string;
-  agentKey: string;
-  agentName: string;
   page: AskPageContext;
-  variant?: string;
   firstQuestion: string;
   firstSelection?: string;
   turnCount: number;
   lastAnswerPreview: string;
+  model?: string;
 }
 
 export interface AskTurn {
@@ -136,9 +134,18 @@ export async function streamAsk(
   return done;
 }
 
-export async function listAskAgents(): Promise<{ agents: AskAgentInfo[]; configuredDefault: string | null }> {
-  const res = await fetch('/api/ask/agents');
-  if (!res.ok) throw new Error(`Failed to list ask agents: ${res.statusText}`);
+/** Build the page snapshot + create the pi session before the user finishes typing. */
+export async function prepareAsk(body: { pageContext: AskPageContext; selections?: AskSelection[] }, signal?: AbortSignal): Promise<AskPrepared> {
+  const res = await fetch('/api/ask/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(errorBody.error || `Ask prepare failed: ${res.statusText}`);
+  }
   return res.json();
 }
 

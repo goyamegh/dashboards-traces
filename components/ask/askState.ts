@@ -4,50 +4,38 @@
  */
 
 /**
- * Shared state + hooks for "highlight & ask" (prototype).
+ * Shared state + hooks for the Agent Health assistant ("highlight & ask").
  *
- * - `useAskVariant`: which UI variant is active. Chosen with `?ask=popover|margin|panel`
- *   (sticky via localStorage so navigation keeps it); `?ask=off` disables.
  * - `useTextSelection`: watches the document for a non-empty text selection
  *   outside the ask UI and reports its text, surrounding text and rect.
- * - `useAskThreads`: the thread/turn state machine that streams `/api/ask`.
+ * - `useAskThreads`: the thread/turn state machine that prepares and streams
+ *   `/api/ask`. Threads are pi sessions on the server; `sessionId` is the pi
+ *   session id.
+ * - `usePersistedWidth`: the resizable panel's width (localStorage).
+ * - `openAskPanel()` / `onOpenAskPanel()`: a tiny event bus so the sidebar
+ *   entry, the nudge and the `/assistant` route can open the panel from
+ *   anywhere without threading props through Layout.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { streamAsk, type AskPageContext, type AskSelection } from '@/services/client/askApi';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { prepareAsk, streamAsk, type AskPageContext, type AskSelection } from '@/services/client/askApi';
 
-export type AskVariant = 'popover' | 'margin' | 'panel' | 'off';
-export const ASK_VARIANTS: AskVariant[] = ['popover', 'margin', 'panel'];
-const VARIANT_KEY = 'ah.ask.variant';
+// ----------------------------------------------------------------------------
+// Open-panel event bus
+// ----------------------------------------------------------------------------
 
-export function readStoredVariant(): AskVariant | null {
-  try {
-    const v = window.localStorage.getItem(VARIANT_KEY);
-    return v && (ASK_VARIANTS as string[]).includes(v) ? (v as AskVariant) : v === 'off' ? 'off' : null;
-  } catch {
-    return null;
-  }
+const OPEN_EVENT = 'agent-health:ask-open';
+export function openAskPanel(detail: { question?: string } = {}): void {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail }));
+}
+export function onOpenAskPanel(handler: (detail: { question?: string }) => void): () => void {
+  const l = (e: Event) => handler((e as CustomEvent).detail ?? {});
+  window.addEventListener(OPEN_EVENT, l);
+  return () => window.removeEventListener(OPEN_EVENT, l);
 }
 
-export function useAskVariant(): [AskVariant, (v: AskVariant) => void] {
-  const location = useLocation();
-  const fromUrl = useMemo(() => {
-    const v = new URLSearchParams(location.search).get('ask');
-    return v && ((ASK_VARIANTS as string[]).includes(v) || v === 'off') ? (v as AskVariant) : null;
-  }, [location.search]);
-  const [variant, setVariantState] = useState<AskVariant>(() => fromUrl ?? readStoredVariant() ?? 'popover');
-  useEffect(() => {
-    if (fromUrl && fromUrl !== variant) setVariantState(fromUrl);
-    if (fromUrl) { try { window.localStorage.setItem(VARIANT_KEY, fromUrl); } catch { /* ignore */ } }
-  }, [fromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-  const setVariant = useCallback((v: AskVariant) => {
-    setVariantState(v);
-    try { window.localStorage.setItem(VARIANT_KEY, v); } catch { /* ignore */ }
-  }, []);
-  return [variant, setVariant];
-}
-
+// ----------------------------------------------------------------------------
+// Selection
 // ----------------------------------------------------------------------------
 
 export interface PendingSelection extends AskSelection {
@@ -61,7 +49,6 @@ function nearbyTextFor(range: Range): string | undefined {
   let node: Node | null = range.commonAncestorContainer;
   if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
   let el = node as HTMLElement | null;
-  // Walk up to a block-ish container that has some text but not the whole page.
   for (let i = 0; el && i < 6; i++) {
     const text = el.innerText?.trim() ?? '';
     if (text.length >= 40 || /^(P|LI|TD|TH|PRE|DIV|SECTION|ARTICLE|H[1-6])$/.test(el.tagName)) {
@@ -72,17 +59,12 @@ function nearbyTextFor(range: Range): string | undefined {
   return undefined;
 }
 
-/**
- * Report the current text selection (outside `[data-ask-ui]`) after the user
- * finishes selecting. Returns `null` while nothing is selected. `enabled=false`
- * turns the listener off (variant `off`).
- */
-export function useTextSelection(enabled: boolean): [PendingSelection | null, () => void] {
+/** Report the current text selection (outside `[data-ask-ui]`) after the user finishes selecting. */
+export function useTextSelection(): [PendingSelection | null, () => void] {
   const [pending, setPending] = useState<PendingSelection | null>(null);
   const clear = useCallback(() => setPending(null), []);
 
   useEffect(() => {
-    if (!enabled) { setPending(null); return; }
     const capture = () => {
       const sel = document.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
@@ -106,7 +88,6 @@ export function useTextSelection(enabled: boolean): [PendingSelection | null, ()
     const onMouseDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest('[data-ask-ui]')) return;
-      // A new click outside the ask UI dismisses the chip (a new selection re-shows it).
       setPending(null);
     };
     document.addEventListener('mouseup', onMouseUp);
@@ -117,11 +98,13 @@ export function useTextSelection(enabled: boolean): [PendingSelection | null, ()
       document.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [enabled]);
+  }, []);
 
   return [pending, clear];
 }
 
+// ----------------------------------------------------------------------------
+// Threads
 // ----------------------------------------------------------------------------
 
 export interface AskTurnState {
@@ -139,14 +122,18 @@ export interface AskTurnState {
 export interface AskThread {
   /** Client id (stable before the server assigns a sessionId). */
   id: string;
+  /** pi session id (from prepare or the first answer). */
   sessionId?: string;
   route: string;
   selections: AskSelection[];
   turns: AskTurnState[];
-  agent?: { key: string; name: string; connectorType: string };
+  model?: string;
   loaded?: string[];
   refs?: Record<string, string | string[] | undefined>;
   createdAt: number;
+  /** Snapshot + pi session are being / have been built server-side for the first question. */
+  preparing?: boolean;
+  prepared?: boolean;
 }
 
 let threadSeq = 0;
@@ -156,8 +143,7 @@ export function newThreadId(): string {
 }
 
 export function buildPageContext(route: string): AskPageContext {
-  // Breadcrumb trail (evals3 pages) > a page-level h1 that is not the app
-  // brand > document.title. The sessions list groups by this.
+  // Breadcrumb trail (evals3 pages) > a page-level h1 that is not the app brand > document.title.
   const crumbs = Array.from(document.querySelectorAll('nav[aria-label="Breadcrumb"] a, nav[aria-label="Breadcrumb"] span'))
     .map((e) => e.textContent?.trim() ?? '')
     .filter((t) => t && t !== '/' && t !== '›' && t !== '>' && t.length < 80);
@@ -166,22 +152,38 @@ export function buildPageContext(route: string): AskPageContext {
   return { route, title };
 }
 
-export function useAskThreads(variant: AskVariant) {
+export function useAskThreads() {
   const [threads, setThreads] = useState<Record<string, AskThread>>({});
   const aborters = useRef<Record<string, AbortController>>({});
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
 
   const update = useCallback((id: string, fn: (t: AskThread) => AskThread) => {
-    setThreads((prev) => (prev[id] ? { ...prev, [id]: fn(prev[id]) } : prev));
+    setThreads((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev, [id]: fn(prev[id]) };
+      threadsRef.current = next;
+      return next;
+    });
   }, []);
 
-  const createThread = useCallback((route: string, selections: AskSelection[]): AskThread => {
+  /** Build the snapshot + pi session now so the first answer starts faster. */
+  const prepare = useCallback((threadId: string) => {
+    const t = threadsRef.current[threadId];
+    if (!t || t.sessionId || t.preparing) return;
+    update(threadId, (x) => ({ ...x, preparing: true }));
+    prepareAsk({ pageContext: buildPageContext(t.route), selections: t.selections })
+      .then((p) => update(threadId, (x) => (x.sessionId ? x : { ...x, sessionId: p.sessionId, refs: p.refs, loaded: p.loaded, model: p.model, prepared: true, preparing: false })))
+      .catch(() => update(threadId, (x) => ({ ...x, preparing: false }))); // ask() will prepare on demand
+  }, [update]);
+
+  const createThread = useCallback((route: string, selections: AskSelection[], opts: { prepare?: boolean } = {}): AskThread => {
     const t: AskThread = { id: newThreadId(), route, selections, turns: [], createdAt: Date.now() };
-    threadsRef.current = { ...threadsRef.current, [t.id]: t }; // visible to ask() in the same tick
+    threadsRef.current = { ...threadsRef.current, [t.id]: t };
     setThreads((prev) => ({ ...prev, [t.id]: t }));
+    if (opts.prepare) setTimeout(() => prepare(t.id), 0);
     return t;
-  }, []);
+  }, [prepare]);
 
   const addSelection = useCallback((threadId: string, sel: AskSelection) => {
     update(threadId, (t) => (t.selections.some((s) => s.text === sel.text) ? t : { ...t, selections: [...t.selections, sel] }));
@@ -193,17 +195,19 @@ export function useAskThreads(variant: AskVariant) {
 
   const removeThread = useCallback((threadId: string) => {
     aborters.current[threadId]?.abort();
-    setThreads((prev) => { const n = { ...prev }; delete n[threadId]; return n; });
+    setThreads((prev) => { const n = { ...prev }; delete n[threadId]; threadsRef.current = n; return n; });
   }, []);
 
-  /** Import a persisted session as a thread (sessions list → open). */
-  const importSession = useCallback((s: { id: string; page: AskPageContext; selections: AskSelection[]; turns: Array<{ id: string; question: string; answer: string; error?: string; toolCalls: string[]; firstTokenMs?: number; durationMs?: number; startedAt: string }>; agentKey: string; agentName: string }) => {
+  /** Import a persisted pi session as a thread (sessions list → open). */
+  const importSession = useCallback((s: { id: string; page: AskPageContext; selections: AskSelection[]; model?: string; turns: Array<{ id: string; question: string; answer: string; error?: string; toolCalls: string[]; firstTokenMs?: number; durationMs?: number; startedAt: string }> }) => {
+    const existing = Object.values(threadsRef.current).find((t) => t.sessionId === s.id);
+    if (existing) return existing;
     const t: AskThread = {
       id: `s-${s.id}`,
       sessionId: s.id,
       route: s.page.route,
       selections: s.selections,
-      agent: { key: s.agentKey, name: s.agentName, connectorType: '' },
+      model: s.model,
       createdAt: Date.now(),
       turns: s.turns.map((turn) => ({
         id: turn.id,
@@ -217,11 +221,12 @@ export function useAskThreads(variant: AskVariant) {
         startedAt: Date.parse(turn.startedAt) || Date.now(),
       })),
     };
+    threadsRef.current = { ...threadsRef.current, [t.id]: t };
     setThreads((prev) => ({ ...prev, [t.id]: t }));
     return t;
   }, []);
 
-  const ask = useCallback(async (threadId: string, question: string, opts: { agentKey?: string; selections?: AskSelection[] } = {}) => {
+  const ask = useCallback(async (threadId: string, question: string) => {
     const thread = threadsRef.current[threadId];
     if (!thread) return;
     const turnId = `turn-${Date.now().toString(36)}`;
@@ -230,46 +235,63 @@ export function useAskThreads(variant: AskVariant) {
 
     const controller = new AbortController();
     aborters.current[threadId] = controller;
-    const sendSelections = opts.selections ?? (thread.turns.length === 0 ? thread.selections : []);
+    // The first turn carries the highlighted text (prepare() only used it for the snapshot); follow-ups add none.
+    const sendSelections = thread.turns.length === 0 ? thread.selections : [];
+    const patchTurn = (fn: (x: AskTurnState) => AskTurnState) =>
+      update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? fn(x) : x)) }));
     try {
       const done = await streamAsk(
+        { question, selections: sendSelections, pageContext: buildPageContext(thread.route), sessionId: thread.sessionId },
         {
-          question,
-          selections: sendSelections,
-          pageContext: buildPageContext(thread.route),
-          agentKey: opts.agentKey,
-          sessionId: thread.sessionId,
-          variant,
-        },
-        {
-          onMeta: (meta) => update(threadId, (t) => ({ ...t, sessionId: meta.sessionId, agent: meta.agent, loaded: meta.loaded, refs: meta.refs })),
-          onDelta: (text) => update(threadId, (t) => ({
-            ...t,
-            turns: t.turns.map((x) => (x.id === turnId ? { ...x, answer: x.answer + text } : x)),
-          })),
-          onTool: (tool) => update(threadId, (t) => ({
-            ...t,
-            turns: t.turns.map((x) => (x.id === turnId ? { ...x, tools: [...x.tools.filter((y) => !(y.name === tool.name && y.status === 'start' && tool.status === 'end')), { name: tool.name, status: tool.status, isError: tool.isError }] } : x)),
+          onMeta: (meta) => update(threadId, (t) => ({ ...t, sessionId: meta.sessionId, model: meta.agent.model, loaded: meta.loaded.length ? meta.loaded : t.loaded, refs: meta.refs })),
+          onDelta: (text) => patchTurn((x) => ({ ...x, answer: x.answer + text })),
+          onTool: (tool) => patchTurn((x) => ({
+            ...x,
+            tools: [...x.tools.filter((y) => !(y.name === tool.name && y.status === 'start' && tool.status === 'end')), { name: tool.name, status: tool.status, isError: tool.isError }],
           })),
         },
         controller.signal
       );
-      update(threadId, (t) => ({
-        ...t,
-        turns: t.turns.map((x) => (x.id === turnId ? { ...x, answer: done.answer, status: 'done', firstTokenMs: done.firstTokenMs, durationMs: done.durationMs } : x)),
-      }));
+      patchTurn((x) => ({ ...x, answer: done.answer, status: 'done', firstTokenMs: done.firstTokenMs, durationMs: done.durationMs }));
     } catch (err: any) {
-      if (controller.signal.aborted) {
-        update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? { ...x, status: 'error', error: 'Cancelled' } : x)) }));
-      } else {
-        update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? { ...x, status: 'error', error: err?.message ?? String(err) } : x)) }));
-      }
+      patchTurn((x) => ({ ...x, status: 'error', error: controller.signal.aborted ? 'Cancelled' : err?.message ?? String(err) }));
     } finally {
       delete aborters.current[threadId];
     }
-  }, [update, variant]);
+  }, [update]);
 
   const cancel = useCallback((threadId: string) => aborters.current[threadId]?.abort(), []);
 
-  return { threads, createThread, addSelection, removeSelection, removeThread, importSession, ask, cancel };
+  return { threads, createThread, prepare, addSelection, removeSelection, removeThread, importSession, ask, cancel };
+}
+
+// ----------------------------------------------------------------------------
+// Persisted panel width
+// ----------------------------------------------------------------------------
+
+export const PANEL_WIDTH_KEY = 'ah.ask.panelWidth';
+export const PANEL_MIN_WIDTH = 380;
+export const PANEL_DEFAULT_WIDTH = 560;
+export function panelMaxWidth(): number {
+  return Math.max(PANEL_MIN_WIDTH, Math.floor(window.innerWidth * 0.75));
+}
+export function clampPanelWidth(w: number): number {
+  return Math.min(panelMaxWidth(), Math.max(PANEL_MIN_WIDTH, Math.round(w)));
+}
+
+export function usePersistedPanelWidth(): [number, (w: number) => void] {
+  const [width, setWidthState] = useState<number>(() => {
+    try {
+      const v = parseInt(window.localStorage.getItem(PANEL_WIDTH_KEY) ?? '', 10);
+      return Number.isFinite(v) ? clampPanelWidth(v) : PANEL_DEFAULT_WIDTH;
+    } catch {
+      return PANEL_DEFAULT_WIDTH;
+    }
+  });
+  const setWidth = useCallback((w: number) => {
+    const c = clampPanelWidth(w);
+    setWidthState(c);
+    try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(c)); } catch { /* ignore */ }
+  }, []);
+  return [width, setWidth];
 }

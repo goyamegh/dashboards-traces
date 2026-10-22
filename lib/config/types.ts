@@ -236,15 +236,6 @@ export interface UserConfig {
   remoteServers?: RemoteServerConfig[];
 
   /**
-   * "Highlight & ask" assistant configuration. `agentKey` names an entry in
-   * `agents[]` whose connector can run a chat turn (`claude-code`, `kiro` or
-   * `pi`); that agent answers questions asked from the web UI. When omitted the
-   * built-in pi-SDK assistant (read-only tools over this server's own API) is
-   * used. The UI can still pick any supported agent per question.
-   */
-  assistant?: AssistantConfig;
-
-  /**
    * Enable or disable the Coding Agent Analytics feature.
    * When false, no coding agent routes are mounted, no background timers
    * run, and the "Coding Agents" nav tab is hidden.
@@ -274,14 +265,6 @@ export interface RemoteServerConfig {
 }
 
 /**
- * "Highlight & ask" assistant configuration (see UserConfig.assistant).
- */
-export interface AssistantConfig {
-  /** Key of the `agents[]` entry that answers UI questions by default. */
-  agentKey?: string;
-}
-
-/**
  * Resolved configuration after loading and merging
  */
 export interface ResolvedConfig {
@@ -299,8 +282,6 @@ export interface ResolvedConfig {
   observability?: ObservabilityClusterConfig;
   /** Eval source roots authored in the TS config (optional; see UserConfig.evalRoots). */
   evalRoots?: string[];
-  /** Highlight & ask assistant config (optional; see UserConfig.assistant). */
-  assistant?: AssistantConfig;
 }
 
 /**

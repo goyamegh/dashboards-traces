@@ -19,7 +19,6 @@ export type {
   JudgeConfig,
   ServerConfig,
   ResolvedServerConfig,
-  AssistantConfig,
 } from './types';
 
 // Re-export hook types for consumer convenience (e.g., in agent-health.config.ts)

@@ -196,7 +196,6 @@ function mergeConfigs(
     storage: userConfig.storage,
     observability: userConfig.observability,
     evalRoots: userConfig.evalRoots,
-    assistant: userConfig.assistant,
   };
 }
 
@@ -308,7 +307,6 @@ export function loadConfigSync(cwd: string = process.cwd()): ResolvedConfig {
     storage: undefined,
     observability: undefined,
     evalRoots: undefined,
-    assistant: undefined,
   };
 }
 
