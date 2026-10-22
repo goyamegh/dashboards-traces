@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -330,6 +331,38 @@ export const SettingsPage: React.FC = () => {
       console.error('Failed to load config status:', error);
     }
   }, []);
+
+  const isCloudWatchObservability = configStatus?.observability.type === 'cloudwatch';
+
+  /** Test the configured CloudWatch backend (no form fields — config is code/env managed). */
+  const testCloudWatchConnection = useCallback(async () => {
+    if (!configStatus?.observability.awsRegion) return;
+    setObservabilityTestStatus('testing');
+    setObservabilityTestMessage('Testing CloudWatch connection...');
+    try {
+      const response = await fetch(`${ENV_CONFIG.backendUrl}/api/observability/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'cloudwatch',
+          awsRegion: configStatus.observability.awsRegion,
+          awsProfile: configStatus.observability.awsProfile || undefined,
+          logGroups: configStatus.observability.logGroups,
+        }),
+      });
+      const result = await response.json();
+      if (result.status === 'ok') {
+        setObservabilityTestStatus('success');
+        setObservabilityTestMessage(`Connected to ${result.clusterName} (${result.latencyMs}ms)${result.message ? ` — ${result.message}` : ''}`);
+      } else {
+        setObservabilityTestStatus('error');
+        setObservabilityTestMessage(result.message || 'Connection failed');
+      }
+    } catch (error) {
+      setObservabilityTestStatus('error');
+      setObservabilityTestMessage(error instanceof Error ? error.message : 'Connection failed');
+    }
+  }, [configStatus]);
 
   // Remote servers CRUD
   const loadRemoteServers = useCallback(async () => {
@@ -1787,6 +1820,29 @@ export const SettingsPage: React.FC = () => {
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
+          {isCloudWatchObservability ? (
+            <div className="space-y-3" data-testid="observability-cloudwatch-panel">
+              <p className="text-xs text-muted-foreground">
+                Traces, logs and metrics are read from <span className="font-medium">Amazon CloudWatch</span> (Transaction Search). Managed in config — edit <code>agent-health.config.ts</code> or the <code>CLOUDWATCH_*</code> environment variables to change it.
+              </p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+                <dt className="text-muted-foreground">Backend</dt>
+                <dd><Badge variant="secondary">CloudWatch Logs</Badge></dd>
+                <dt className="text-muted-foreground">Region</dt>
+                <dd data-testid="cw-region">{configStatus?.observability.awsRegion || '—'}</dd>
+                <dt className="text-muted-foreground">AWS profile</dt>
+                <dd data-testid="cw-profile">{configStatus?.observability.awsProfile || 'default credential chain'}</dd>
+                <dt className="text-muted-foreground">Traces log group</dt>
+                <dd data-testid="cw-traces-group"><code>{configStatus?.observability.logGroups?.traces || 'aws/spans'}</code></dd>
+                <dt className="text-muted-foreground">Logs log group</dt>
+                <dd data-testid="cw-logs-group"><code>{configStatus?.observability.logGroups?.logs || '/agent-health/{service.name}'}</code></dd>
+              </dl>
+              <Button size="sm" variant="outline" onClick={testCloudWatchConnection} disabled={observabilityTestStatus === 'testing'}>
+                {observabilityTestStatus === 'testing' ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
+                Test Connection
+              </Button>
+            </div>
+          ) : (<>
           <p className="text-xs text-muted-foreground">
             Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
           </p>
@@ -1963,6 +2019,7 @@ export const SettingsPage: React.FC = () => {
               )}
             </div>
           </div>
+          </>)}
 
           {/* Config source indicator */}
           {configStatus?.observability && (
