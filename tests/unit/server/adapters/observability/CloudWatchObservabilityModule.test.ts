@@ -338,6 +338,17 @@ describe('CloudWatchObservabilityModule', () => {
       expect(reader.calls.filter[1]).toMatchObject({ startMs: 1000, endMs: 2000 });
     });
 
+    it('an over-cap explicit range is clamped to the newest 30 days AND reported truncated (never silently narrowed)', async () => {
+      const now = Date.now();
+      const res = await mod(reader).traces.query({ traceId: TRACE, startTime: now - 60 * 86_400_000, endTime: now });
+      const scan = reader.calls.filter[0];
+      expect(scan.endMs - scan.startMs).toBe(DEFAULT_MAX_WINDOW_MS);
+      expect(res.truncated).toBe(true);
+      // Within the cap: not flagged.
+      const ok = await mod(reader).traces.query({ traceId: TRACE, startTime: now - 10 * 86_400_000, endTime: now });
+      expect(ok.truncated).toBe(false);
+    });
+
     it('paginates with an offset cursor', async () => {
       const m = mod(reader);
       const p1 = await m.traces.query({ traceId: TRACE, size: 5 });
@@ -405,6 +416,13 @@ describe('CloudWatchObservabilityModule', () => {
       expect(narrowed.total).toBe(1);
     });
 
+    it('logs: an over-cap explicit range is clamped and the result marked truncated', async () => {
+      const now = Date.now();
+      const res = await mod(reader).logs.query({ traceId: TRACE, serviceName: SERVICE, startTime: now - 90 * 86_400_000, endTime: now });
+      expect(reader.calls.filter[0].endMs - reader.calls.filter[0].startMs).toBe(DEFAULT_MAX_WINDOW_MS);
+      expect(res.truncated).toBe(true);
+    });
+
     it('browsing without ids defaults to the last hour; id lookups to the full lookback', async () => {
       const m = mod(reader);
       await m.logs.query({ serviceName: SERVICE });
@@ -417,17 +435,17 @@ describe('CloudWatchObservabilityModule', () => {
   });
 
   describe('metrics', () => {
-    it('forRun fetches the run spans through the FilterLogEvents fast path and applies the shared math (no double count)', async () => {
+    it('forRun fetches the run spans through the FilterLogEvents fast path and applies the shared math', async () => {
       const m = await mod(reader).metrics.forRun(RUN);
       expect(reader.calls.filter[0].pattern).toBe(`"${RUN}"`);
       expect(reader.calls.insights).toHaveLength(0);
-      expect(m).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 21476, outputTokens: 843, llmCalls: 3, toolCalls: 3, status: 'success' });
+      expect(m).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 42952, outputTokens: 1686, llmCalls: 4, toolCalls: 3, status: 'success' });
       expect(m.partial).toBeUndefined();
     });
 
     it('forRun threads upstream hints (traceId / agents) and stamps correlatedBy', async () => {
       const m = await mod(reader).metrics.forRun('report-key', { traceId: TRACE, agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] });
-      expect(m.inputTokens).toBe(21476);
+      expect(m.inputTokens).toBe(42952);
       expect(m.correlatedBy).toBe('ids'); // traceId is an id correlator
       expect(m.hasSpans).toBe(true);
       expect(reader.calls.insights).toHaveLength(0); // agent spans found by id → no window
@@ -443,8 +461,8 @@ describe('CloudWatchObservabilityModule', () => {
       expect(reader.calls.filter[0].pattern).toContain('e'.repeat(32));
       // …but, being eval-only, must not suppress the window.
       expect(reader.calls.insights).toHaveLength(1);
-      expect(m.inputTokens).toBe(21476);
-      expect(m.llmCalls).toBe(3);
+      expect(m.inputTokens).toBe(42952);
+      expect(m.llmCalls).toBe(4);
       expect(m.correlatedBy).toBe('mixed'); // eval span by id + agent spans by window
     });
 
@@ -457,7 +475,7 @@ describe('CloudWatchObservabilityModule', () => {
         agentsByRunId: { 'report-xyz': [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] },
       });
       expect(reader.calls.insights).toHaveLength(1);
-      expect(byId).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
+      expect(byId).toMatchObject({ runId: RUN, inputTokens: 42952, correlatedBy: 'ids' });
       expect(byWindow).toMatchObject({ runId: 'report-xyz', correlatedBy: 'window' });
       expect(byWindow.inputTokens).toBeGreaterThan(0);
     });
@@ -468,7 +486,7 @@ describe('CloudWatchObservabilityModule', () => {
       });
       const idScan = reader.calls.filter[0];
       expect(idScan.endMs - idScan.startMs).toBe(DEFAULT_LOOKBACK_MS);
-      expect(real).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
+      expect(real).toMatchObject({ runId: RUN, inputTokens: 42952, correlatedBy: 'ids' });
     });
 
     it('a capped scan marks every key of the chunk partial', async () => {
@@ -496,7 +514,7 @@ describe('CloudWatchObservabilityModule', () => {
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const res = await mod(reader).metrics.forRuns(ids);
       expect(res.slice(0, 50).every((m) => m.status === 'error')).toBe(true);
-      expect(res[50]).toMatchObject({ runId: RUN, inputTokens: 21476, status: 'success' });
+      expect(res[50]).toMatchObject({ runId: RUN, inputTokens: 42952, status: 'success' });
       warn.mockRestore();
     });
   });

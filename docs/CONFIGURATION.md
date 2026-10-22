@@ -290,7 +290,7 @@ Every query is bounded, and a result that hit a bound is reported as partial
 |---|---|---|
 | Scan window for id-only requests with no run window | 7 days (`lookbackMs`) | request time → back |
 | Scan window when the request carries the run's window | the run window ± 5 min | run-report Traces tab |
-| Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest part kept |
+| Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest 30 days are scanned and the result is marked partial (Traces tab warning / `truncated` on logs / `partial` on metrics) |
 | FilterLogEvents pages per scan | 50 (≈ 50 MB) | then Insights fallback / partial |
 | Rows per query (both paths) | 10,000 | partial beyond |
 | Concurrent AWS calls per backend instance | 4 | queued |
@@ -304,9 +304,10 @@ from for 60 s instead of re-scanning.
 `traceContext.propagateHeader` enabled (HTTP agents) Agent Health injects the
 W3C `traceparent` header and a `baggage` header containing
 `agent_health.run.id=<report id>` into every request to the configured agent
-endpoint — including third-party endpoints you configure. An existing
-`baggage` header from your agent config or a `beforeRequest` hook is merged,
-not replaced (Agent Health's key wins on a collision). Disable
+endpoint — including third-party endpoints you configure. Existing `baggage`
+headers from your agent config or a `beforeRequest` hook (any casing) are
+merged into one canonical header, not replaced (Agent Health's key wins on a
+collision). Disable
 `propagateHeader` if the agent must not receive these headers.
 
 **One-time account setup**

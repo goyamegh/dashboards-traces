@@ -211,7 +211,7 @@ class CloudWatchTracesOperations implements ITracesOperations {
     options: Pick<TracesQueryOptions, 'startTime' | 'endTime' | 'agents'>,
     /** Narrow to the agents' windows. Only valid when every correlator on the request belongs to the run(s) those windows describe. */
     narrowToAgents = true
-  ): { startMs: number; endMs: number } {
+  ): { startMs: number; endMs: number; clamped: boolean } {
     const now = Date.now();
     let startMs: number;
     let endMs: number;
@@ -228,8 +228,11 @@ class CloudWatchTracesOperations implements ITracesOperations {
         startMs = now - this.lookbackMs;
       }
     }
-    if (endMs - startMs > this.maxWindowMs) startMs = endMs - this.maxWindowMs;
-    return { startMs, endMs };
+    // Over-cap ranges are clamped to the newest `maxWindowMs` and reported as
+    // clamped so the result is marked partial (never silently narrowed).
+    const clamped = endMs - startMs > this.maxWindowMs;
+    if (clamped) startMs = endMs - this.maxWindowMs;
+    return { startMs, endMs, clamped };
   }
 
   /** Exact-id path: FilterLogEvents term scan. */
@@ -267,9 +270,9 @@ class CloudWatchTracesOperations implements ITracesOperations {
     const agentSpanFound = exact.sources.some((src) => !isEvalOrJudgeSpan(src.attributes || {}, src.name));
     const noExact = exactCorrelatorIds(options).length === 0;
     const windowNeeded = noExact || (needsWindow && (!useUnion || !agentSpanFound)) || exact.truncated;
-    if (!windowNeeded) return exact;
+    if (!windowNeeded) return { sources: exact.sources, truncated: exact.truncated || scan.clamped };
     const win = await this.fetchWindow(options, useUnion, scan);
-    return { sources: [...exact.sources, ...win.sources], truncated: exact.truncated || win.truncated };
+    return { sources: [...exact.sources, ...win.sources], truncated: exact.truncated || win.truncated || scan.clamped };
   }
 
   async query(options: TracesQueryOptions) {
@@ -363,7 +366,8 @@ class CloudWatchLogsOperations implements ILogsOperations {
     const endMs = endTime ?? now;
     // Id lookups search the lookback; browsing defaults to the last hour.
     let startMs = startTime ?? (traceId || runId ? endMs - this.lookbackMs : endMs - 60 * 60 * 1000);
-    if (endMs - startMs > this.maxWindowMs) startMs = endMs - this.maxWindowMs;
+    const clamped = endMs - startMs > this.maxWindowMs;
+    if (clamped) startMs = endMs - this.maxWindowMs;
 
     let pattern = '';
     if (traceId) pattern = traceIdFilterPattern(traceId);
@@ -374,7 +378,7 @@ class CloudWatchLogsOperations implements ILogsOperations {
     // the caller wants, so a group is scanned past `size` (bounded by the reader's
     // page budget) and trimmed after sorting rather than cut off at the oldest.
     const perGroupLimit = Math.min(INSIGHTS_ROW_LIMIT, size * 10);
-    let anyTruncated = groupsTruncated;
+    let anyTruncated = groupsTruncated || clamped;
     const perGroup = await Promise.all(
       groups.map(async (g) => {
         try {
@@ -435,9 +439,10 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
       try {
         const exactIds = [...lookups.runIdCorrelators, ...lookups.sessionIdToRunId.keys(), ...lookups.traceIdToRunId.keys()];
         // Mixed chunk: keys' runs happened at different times → full lookback for the id scan.
-        const exact = await this.traces.fetchExact(exactIds, this.traces.window({}, false));
+        const idScan = this.traces.window({}, false);
+        const exact = await this.traces.fetchExact(exactIds, idScan);
         let sources = exact.sources;
-        let truncated = exact.truncated;
+        let truncated = exact.truncated || idScan.clamped;
 
         // Which keys already have agent spans by exact id?
         const idSet = new Set(lookups.runIdCorrelators);
@@ -457,9 +462,10 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
           for (const { key, hint } of list) if (!found.has(key)) pendingHints.push(hint);
         }
         if (pendingHints.length > 0) {
-          const win = await this.traces.fetchWindow({ agents: pendingHints }, true, this.traces.window({ agents: pendingHints }));
+          const winScan = this.traces.window({ agents: pendingHints });
+          const win = await this.traces.fetchWindow({ agents: pendingHints }, true, winScan);
           sources = [...sources, ...win.sources];
-          truncated = truncated || win.truncated;
+          truncated = truncated || win.truncated || winScan.clamped;
         }
 
         const seen = new Set<string>();
