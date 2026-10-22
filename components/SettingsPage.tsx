@@ -2056,6 +2056,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           )}
 
+          {!isCloudWatchObservability && (
           <div className="flex flex-wrap gap-2 pt-2">
             <Button
               variant="outline"
@@ -2091,6 +2092,7 @@ export const SettingsPage: React.FC = () => {
               Clear
             </Button>
           </div>
+          )}
         </CardContent>
       </Card>
 
