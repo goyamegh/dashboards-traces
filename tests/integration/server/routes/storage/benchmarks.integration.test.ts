@@ -48,23 +48,55 @@ const checkBackend = async (): Promise<boolean> => {
 };
 
 /**
- * Whether the backend can EXECUTE a benchmark run. `POST
+ * Which storage backend the server is running on. `POST
  * /api/storage/benchmarks/:id/execute` hard-requires an OpenSearch storage
  * client (`isStorageAvailable` → `requireStorageClient`) and answers 400
  * "OpenSearch not configured" on a healthy file-storage server, so the
  * execute-then-cancel test below can only run against OpenSearch. The
  * `/cancel` route itself (and its 404 for an unknown run) works on both
  * backends and keeps running everywhere.
+ *
+ * Fails CLOSED: only an explicit `{ status: 'ok', backend: 'file' }` means
+ * "file". A non-2xx health response, a malformed body, a storage error state
+ * or a network failure during the probe THROWS (failing the suite in
+ * beforeAll) instead of being mistaken for file storage and silently
+ * skipping the only test that exercises /execute → /cancel.
  */
-const checkCanExecute = async (): Promise<boolean> => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/storage/health`);
-    const data = await response.json();
-    return data.status === 'ok' && data.backend !== 'file';
-  } catch {
-    return false;
+type StorageBackend = 'file' | 'opensearch';
+const probeStorageBackend = async (): Promise<StorageBackend> => {
+  const response = await fetch(`${BASE_URL}/api/storage/health`);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`storage health probe: HTTP ${response.status} — ${text.slice(0, 300)}`);
   }
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`storage health probe: non-JSON body — ${text.slice(0, 300)}`);
+  }
+  if (data?.status !== 'ok') {
+    throw new Error(`storage health probe: backend not healthy — ${text.slice(0, 300)}`);
+  }
+  if (data.backend === 'file') return 'file';
+  // The OpenSearch module reports its cluster health with no `backend` key
+  // (server/routes/storage/admin.ts); any other explicit backend value
+  // ('error', or something new) is not a shape this suite understands.
+  if (data.backend === undefined || data.backend === 'opensearch') return 'opensearch';
+  throw new Error(`storage health probe: unexpected backend "${data.backend}" — ${text.slice(0, 300)}`);
 };
+
+/**
+ * The backend a CI job PROMISES. ci.yml's `integration-tests` job provisions
+ * an OpenSearch service and sets `AH_TEST_EXPECT_BACKEND=opensearch` for the
+ * test step; when that promise is broken (service down, env lost, server
+ * fell back to file mode) the execute-then-cancel test must FAIL, not skip —
+ * otherwise /execute coverage disappears from CI with a green check. Keyed
+ * on a dedicated variable rather than `CI`, which GitHub Actions sets for
+ * EVERY job including `release-rehearsal` (plain `npm test`, no OpenSearch)
+ * — see the note in traceTextSearch.opensearch.integration.test.ts.
+ */
+const EXPECTED_BACKEND = process.env.AH_TEST_EXPECT_BACKEND;
 
 // Create a test case for the benchmark
 const createTestCase = async (): Promise<string> => {
@@ -299,7 +331,14 @@ describe('Benchmark Cancel Integration Tests', () => {
       console.warn('Start the backend with: npm run dev:server');
       return;
     }
-    canExecute = await checkCanExecute();
+    const backend = await probeStorageBackend(); // throws → suite fails, never a silent skip
+    if (EXPECTED_BACKEND && backend !== EXPECTED_BACKEND) {
+      throw new Error(
+        `AH_TEST_EXPECT_BACKEND=${EXPECTED_BACKEND} but the server at ${BASE_URL} is on "${backend}" storage — ` +
+        'the CI job promised an OpenSearch backend; refusing to skip the execute-then-cancel test',
+      );
+    }
+    canExecute = backend === 'opensearch';
     if (!canExecute) {
       console.warn('[benchmarks.integration] file-storage backend: POST .../benchmarks/:id/execute requires OpenSearch (returns 400) — skipping the execute-then-cancel test; the /cancel 404 test still runs');
     }

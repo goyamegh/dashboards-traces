@@ -321,6 +321,10 @@ jobs:
         run: npm run test:integration -- --coverage --coverageThreshold='{}' --coverageReporters=json-summary --coverageReporters=json --coverageReporters=lcov --coverageDirectory=coverage-integration 2>&1 | tee integration-test-output.txt
         env:
           AH_PORT: 4001
+          # This job PROMISES an OpenSearch-backed server (service above).
+          # Backend-aware suites fail (instead of skipping) when the promise
+          # is broken, so OpenSearch-only coverage can't silently vanish.
+          AH_TEST_EXPECT_BACKEND: opensearch
           # Zero-leak enforcement: a tracker cleanup (or the globalTeardown
           # ledger sweep) whose DELETE the backend actively REJECTS fails the
           # job instead of just logging a warning. Network-level failures

@@ -53,11 +53,37 @@ const NAME_MARKER = `createvalidation-integration-${Date.now()}-${process.pid}`;
  * instead: the rejected body carries a unique marker in a field that WOULD
  * be stored if the route wrongly persisted it, and the collection is scanned
  * for that marker afterwards. The scan is read-only and independent of what
- * anyone else creates or deletes meanwhile.
+ * anyone else creates or deletes meanwhile — and it fails closed when the
+ * read itself is degraded (see listItems).
  */
 async function listItems(url: string, key: 'testCases' | 'benchmarks'): Promise<any[]> {
-  const body = await fetch(url).then((r) => r.json());
-  return (body?.[key] ?? body?.items ?? []) as any[];
+  // Fail CLOSED on a degraded read. These routes answer 200 with an EMPTY
+  // list and `meta.storageReachable: false` when the storage adapter throws
+  // (and the split-brain guard answers 503 `storage_unavailable`); the
+  // split-brain guard aside, an empty list is exactly what "nothing was
+  // persisted" looks like — so a storage outage must fail the test, never
+  // satisfy it. Require a 2xx, an actual array at the expected key, and
+  // `meta.storageReachable === true` whenever the route reports it.
+  const response = await fetch(url);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`listItems(${url}): HTTP ${response.status} — ${text.slice(0, 300)}`);
+  }
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`listItems(${url}): non-JSON body — ${text.slice(0, 300)}`);
+  }
+  if (!Array.isArray(body?.[key])) {
+    throw new Error(`listItems(${url}): expected an array at "${key}", got ${JSON.stringify(body).slice(0, 300)}`);
+  }
+  if (body.meta && 'storageReachable' in body.meta && body.meta.storageReachable !== true) {
+    throw new Error(
+      `listItems(${url}): storage not reachable (meta=${JSON.stringify(body.meta)}) — an empty list here proves nothing`,
+    );
+  }
+  return body[key] as any[];
 }
 
 function itemsMentioning(items: any[], marker: string): any[] {

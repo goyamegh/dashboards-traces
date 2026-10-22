@@ -112,10 +112,12 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
   const reportIds = new Map<string, any>();
   const testCasesByName = new Map<string, any>();
   let benchmarkId = '';
-  // Everything the spawned CLI persists (benchmark, evaluation runs, their
-  // per-case reports, the imported test cases) is deleted in afterAll BY ID
-  // via the shared tracker — this suite used to leave all of it behind on
-  // every run (two test cases + a benchmark + runs + reports per execution).
+  // What the spawned CLI persists (benchmark, evaluation runs, their per-case
+  // reports, the imported test cases) is tracked BY ID as soon as each id is
+  // known — benchmark/run ids straight from the CLI's stdout, even when it
+  // times out; test-case/report ids from the run docs — and deleted in
+  // afterAll via the shared tracker. This suite used to leave all of it
+  // behind on every run (two test cases + a benchmark + runs + reports).
   const tracker = createTestDataTracker(BASE_URL);
   let cliStdout = '';
   let cliStderr = '';
@@ -180,16 +182,22 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     cliStderr = cli.stderr || '';
     cliStatus = cli.status;
 
-    if (cli.status === null) {
-      throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cliStdout}\nSTDERR:\n${cliStderr}`);
-    }
-
+    // Track the benchmark + run ids the CLI printed BEFORE any throw below,
+    // so a timed-out / killed CLI (which may already have persisted them)
+    // still gets cleaned up by id.
     const urlRe = /\/evaluations\/benchmarks\/(bench-[A-Za-z0-9-]+)\/runs\/((?:eval-)?run-[A-Za-z0-9-]+)/g;
     const benchRunPairs: Array<{ bid: string; rid: string }> = [];
     let m: RegExpExecArray | null;
     while ((m = urlRe.exec(cliStdout)) !== null) {
       benchRunPairs.push({ bid: m[1], rid: m[2] });
+      tracker.benchmark(m[1]);
+      tracker.evaluationRun(m[2]);
     }
+
+    if (cli.status === null) {
+      throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cliStdout}\nSTDERR:\n${cliStderr}`);
+    }
+
     // If the bug regresses, the CLI exits non-zero with "has no test
     // cases" and prints no run URLs — don't throw here so the dedicated
     // "did not regress" assertion below can report the real failure
@@ -197,11 +205,9 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     if (benchRunPairs.length === 0) return;
 
     benchmarkId = benchRunPairs[0].bid;
-    tracker.benchmark(benchmarkId);
 
     const allRuns: any[] = [];
     for (const { rid } of benchRunPairs) {
-      tracker.evaluationRun(rid);
       const runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
       if (runRes.status !== 200) continue;
       allRuns.push(runRes.body);
