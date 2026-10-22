@@ -26,7 +26,6 @@ jest.mock('@/server/services/tracesService', () => {
 
 // Mock the observability client factory; the route resolves an IObservabilityModule.
 jest.mock('@/server/services/observabilityClient', () => ({
-  getObservabilityClient: jest.fn(),
   getObservabilityModule: jest.fn(),
 }));
 import { getObservabilityModule } from '@/server/services/observabilityClient';
@@ -45,6 +44,7 @@ function fileModuleEmpty(): any {
     metrics: {},
     health: jest.fn().mockResolvedValue({ status: 'ok' }),
     isConfigured: () => true,
+    describe: () => ({ type: 'file', target: '.agent-health/data/traces' }),
   };
 }
 

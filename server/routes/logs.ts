@@ -8,8 +8,8 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { fetchLogs, fetchLogsLegacy } from '../services/logsService';
-import { getObservabilityClient } from '../services/observabilityClient.js';
+import { fetchLogsLegacy } from '../services/logsService';
+import { getObservabilityModule } from '../services/observabilityClient.js';
 
 const router = Router();
 
@@ -22,7 +22,7 @@ router.post('/api/logs', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Request body must be a JSON object' });
     }
 
-    const { runId, query, startTime, endTime, size: rawSize } = req.body;
+    const { runId, traceId, serviceName, query, startTime, endTime, size: rawSize } = req.body;
 
     // Regression guard (API KPI probe finding, F9): every real caller of
     // this route (query_logs judge/comparison tools) always scopes the
@@ -53,19 +53,20 @@ router.post('/api/logs', async (req: Request, res: Response) => {
     if (endTime !== undefined && typeof endTime !== 'number') {
       return res.status(400).json({ error: 'endTime must be a number (epoch ms) when provided' });
     }
+    for (const [k, v] of Object.entries({ traceId, serviceName, query })) {
+      if (v !== undefined && typeof v !== 'string') {
+        return res.status(400).json({ error: `${k} must be a string when provided` });
+      }
+    }
 
-    const obs = getObservabilityClient(req);
-    if (!obs) {
+    const obs = getObservabilityModule(req);
+    if (obs.describe().type === 'file') {
+      // The file backend stores traces only; logs need a cluster or CloudWatch.
       return res.status(503).json({ error: 'Observability data source not configured' });
     }
 
-    const result = await fetchLogs(
-      { runId, query, startTime, endTime, size },
-      obs.client,
-      obs.indexes.logs
-    );
-
-    res.json(result);
+    const result = await obs.logs.query({ runId, traceId, serviceName, query, startTime, endTime, size });
+    res.json({ logs: result.logs, total: result.total, backend: obs.describe().type });
   } catch (error: any) {
     console.error('[LogsAPI] Error:', error);
     res.status(500).json({ error: `Logs fetch failed: ${error.message}` });

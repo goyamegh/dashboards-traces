@@ -6,14 +6,10 @@
 /**
  * OpenSearch Observability Module
  *
- * Realizes the `IObservabilityModule` adapter interface against an OpenSearch
- * cluster, wrapping the existing `tracesService` / `logsService` read path.
- * This is the OpenSearch implementation of the pluggable observability
- * data-source — a sibling to the file-backed module (added in a later PR).
- *
- * Selection precedence (see docs/CONFIGURATION.md + AGENTS.md): when an
- * observability cluster is configured it is the ONLY trace source — a broken
- * cluster surfaces as an error, never a silent fallback to another backend.
+ * IObservabilityModule backed by an OpenSearch cluster holding OTel
+ * Data Prepper indices. Wraps the DSL-building services
+ * (tracesService / logsService / metricsService) behind the backend-neutral
+ * adapter interface so routes never touch an OpenSearch Client directly.
  */
 
 import { Client } from '@opensearch-project/opensearch';
@@ -24,10 +20,14 @@ import type {
   IMetricsOperations,
   TracesQueryOptions,
   LogsQueryOptions,
+  ObservabilityBackendInfo,
+  RunMetricsHints,
+  BatchMetricsHints,
 } from '../types.js';
-import type { Span, HealthStatus, OpenSearchLog } from '../../../types/index.js';
+import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { fetchTraces, checkTracesHealth } from '../../services/tracesService.js';
 import { fetchLogs } from '../../services/logsService.js';
+import { computeMetrics, computeBatchMetrics } from '../../services/metricsService.js';
 
 export interface ObservabilityIndexes {
   traces: string;
@@ -67,7 +67,23 @@ class OpenSearchLogsOperations implements ILogsOperations {
   }
 }
 
-class NoopMetricsOperations implements IMetricsOperations {}
+class OpenSearchMetricsOperations implements IMetricsOperations {
+  constructor(private readonly client: Client, private readonly index: string) {}
+
+  forRun(runId: string, hints?: RunMetricsHints): Promise<MetricsResult> {
+    return computeMetrics(runId, { client: this.client, indexPattern: this.index }, hints?.sessionId, hints?.traceId, hints?.agents);
+  }
+
+  forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]> {
+    return computeBatchMetrics(
+      runIds,
+      { client: this.client, indexPattern: this.index },
+      hints?.sessionIdByRunId,
+      hints?.traceIdByRunId,
+      hints?.agentsByRunId
+    );
+  }
+}
 
 export class OpenSearchObservabilityModule implements IObservabilityModule {
   readonly traces: ITracesOperations;
@@ -82,7 +98,7 @@ export class OpenSearchObservabilityModule implements IObservabilityModule {
     this.indexes = indexes;
     this.traces = new OpenSearchTracesOperations(client, indexes.traces);
     this.logs = new OpenSearchLogsOperations(client, indexes.logs);
-    this.metrics = new NoopMetricsOperations();
+    this.metrics = new OpenSearchMetricsOperations(client, indexes.traces);
   }
 
   async health(): Promise<HealthStatus> {
@@ -92,5 +108,9 @@ export class OpenSearchObservabilityModule implements IObservabilityModule {
 
   isConfigured(): boolean {
     return true;
+  }
+
+  describe(): ObservabilityBackendInfo {
+    return { type: 'opensearch', target: this.indexes.traces };
   }
 }

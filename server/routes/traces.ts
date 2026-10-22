@@ -72,8 +72,8 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     let suggestion: string | undefined;
     let nextCursor: string | null = null;
     let hasMore: boolean = false;
-    const backend: 'opensearch' | 'file' = resolveObservabilityConfig(req) ? 'opensearch' : 'file';
     const obs = getObservabilityModule(req);
+    const backend = obs.describe().type;
 
     if (traceId || (runIds && runIds.length > 0) || sessionId || startTime || endTime || (agents && agents.length > 0)) {
       try {
@@ -152,8 +152,8 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
       });
     }
 
-    // Proactive credential check for SigV4 auth
-    if (config.authType === 'sigv4') {
+    // Proactive credential check for AWS-authenticated backends (SigV4 OpenSearch, CloudWatch)
+    if (config.authType === 'sigv4' || config.type === 'cloudwatch') {
       const credError = await validateAwsCredentials(config.awsProfile);
       if (credError) {
         return res.json({
@@ -167,7 +167,7 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
 
     const obs = getObservabilityModule(req);
     const result = await obs.health();
-    res.json({ ...result, backend: 'opensearch' });
+    res.json({ ...result, backend: obs.describe().type });
   } catch (error: any) {
     res.json({ status: 'error', error: error.message });
   }

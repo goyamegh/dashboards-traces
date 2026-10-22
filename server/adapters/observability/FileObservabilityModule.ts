@@ -28,78 +28,14 @@ import type {
   IMetricsOperations,
   TracesQueryOptions,
   LogsQueryOptions,
+  ObservabilityBackendInfo,
 } from '../types.js';
-import type { Span, HealthStatus, OpenSearchLog } from '../../../types/index.js';
+import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { TraceStore } from '../file/TraceStore.js';
+import { computeUseUnion, matchesQuery, spanMs } from './traceQueryMatch.js';
 
-function toMs(v: unknown): number {
-  if (typeof v === 'number') return v;
-  if (typeof v === 'string') {
-    const n = Number(v);
-    if (!Number.isNaN(n) && v.trim() !== '') return n; // numeric string = epoch ms
-    const p = Date.parse(v);
-    return Number.isNaN(p) ? 0 : p;
-  }
-  return 0;
-}
-
-function spanMs(s: Span): number {
-  return Date.parse(s.startTime);
-}
-
-/** Whether a span's service identity matches `name` (service.name / serviceName / gen_ai.agent.name). */
-function serviceMatches(s: Span, name: string): boolean {
-  const a = s.attributes || {};
-  return a['service.name'] === name || a['serviceName'] === name || a['gen_ai.agent.name'] === name;
-}
-
-export function computeUseUnion(options: TracesQueryOptions): boolean {
-  const { traceId, runIds, agents } = options;
-  return (
-    [!!traceId, !!(runIds && runIds.length > 0)].filter(Boolean).length + (agents?.length ?? 0) > 1
-  );
-}
-
-/** Replicates the OpenSearch bool query (must filters + must/should correlation). */
-export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boolean): boolean {
-  const { traceId, runIds, sessionId, startTime, endTime, serviceName, textSearch, agents } = options;
-  const a = s.attributes || {};
-
-  // ---- must-filters (always required) ----
-  if (sessionId && a['session.id'] !== sessionId) return false;
-  if (startTime !== undefined && spanMs(s) < toMs(startTime)) return false;
-  if (endTime !== undefined && spanMs(s) > toMs(endTime)) return false;
-  if (serviceName && !serviceMatches(s, serviceName)) return false;
-  if (textSearch) {
-    const q = textSearch.toLowerCase();
-    const hit =
-      (s.name || '').toLowerCase().includes(q) ||
-      Object.values(a).some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
-    if (!hit) return false;
-  }
-
-  // ---- correlation clauses (A/B/C/D) ----
-  const clauses: boolean[] = [];
-  if (traceId) clauses.push(s.traceId === traceId);
-  if (runIds && runIds.length > 0) {
-    const valid = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
-    // Strategy B: agent_health.run.id OR the OTEL-standard gen_ai.conversation.id.
-    clauses.push(valid.includes(a['agent_health.run.id']) || valid.includes(a['gen_ai.conversation.id']));
-  }
-  if (agents && agents.length > 0) {
-    for (const ag of agents) {
-      // Strategy C: service.name within the run window.
-      const strategyC = serviceMatches(s, ag.serviceName) && spanMs(s) >= ag.startedAt && spanMs(s) <= ag.endedAt;
-      // Strategy D: precise per-run session.id (e.g. Claude Code).
-      const strategyD = ag.sessionId !== undefined && a['session.id'] === ag.sessionId;
-      clauses.push(strategyC || strategyD);
-    }
-  }
-
-  // useUnion → at least one correlation clause (should); else → all clauses (must).
-  // No correlation clauses (pure time-range browse) → matches on must-filters alone.
-  return useUnion ? clauses.some(Boolean) : clauses.every(Boolean);
-}
+export { computeUseUnion, matchesQuery } from './traceQueryMatch.js';
+import { computeMetricsFromSpans, type MetricsSpanSource } from '../../services/metricsService.js';
 
 function decodeOffset(cursor?: string): number {
   if (!cursor) return 0;
@@ -165,7 +101,37 @@ class FileLogsOperations implements ILogsOperations {
   }
 }
 
-class NoopMetricsOperations implements IMetricsOperations {}
+/** Normalized `Span` → the plain-raw shape the shared metrics math consumes. */
+export function spanToMetricsSource(s: Span): MetricsSpanSource {
+  const startMs = Date.parse(s.startTime);
+  const endMs = Date.parse(s.endTime);
+  const durationMs = s.duration ?? (Number.isFinite(startMs) && Number.isFinite(endMs) ? endMs - startMs : 0);
+  return {
+    name: s.name,
+    traceId: s.traceId,
+    spanId: s.spanId,
+    parentSpanId: s.parentSpanId,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    durationInNanos: durationMs * 1e6,
+    status: { code: s.status === 'ERROR' ? 2 : s.status === 'OK' ? 1 : 0 },
+    attributes: s.attributes || {},
+  };
+}
+
+class FileMetricsOperations implements IMetricsOperations {
+  constructor(private readonly traces: ITracesOperations) {}
+
+  async forRun(runId: string): Promise<MetricsResult> {
+    const spans = await this.traces.getByRunIds([runId]);
+    const sorted = [...spans].sort((a, b) => spanMs(a) - spanMs(b));
+    return computeMetricsFromSpans(runId, sorted.map(spanToMetricsSource));
+  }
+
+  async forRuns(runIds: string[]): Promise<MetricsResult[]> {
+    return Promise.all(runIds.map((id) => this.forRun(id)));
+  }
+}
 
 export class FileObservabilityModule implements IObservabilityModule {
   readonly traces: ITracesOperations;
@@ -177,7 +143,7 @@ export class FileObservabilityModule implements IObservabilityModule {
     this.store = new TraceStore(baseDir);
     this.traces = new FileTracesOperations(this.store);
     this.logs = new FileLogsOperations();
-    this.metrics = new NoopMetricsOperations();
+    this.metrics = new FileMetricsOperations(this.traces);
   }
 
   /** Ingest spans (used by the embedded OTLP receiver). */
@@ -191,5 +157,9 @@ export class FileObservabilityModule implements IObservabilityModule {
 
   isConfigured(): boolean {
     return true;
+  }
+
+  describe(): ObservabilityBackendInfo {
+    return { type: 'file', target: this.store.directory };
   }
 }
