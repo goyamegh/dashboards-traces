@@ -276,9 +276,38 @@ observability: {
 correlation (strategies A–D in [AGENTS.md](../AGENTS.md)) is identical to the
 OpenSearch reader: agents should adopt the incoming `traceparent`, and may stamp
 the `agent_health.run.id` W3C **baggage** entry Agent Health sends alongside it
-as a span attribute. Note that `aws/spans` is indexed asynchronously —
-a brand-new run can take 1–2 minutes to become queryable, which the trace
-poller already tolerates.
+as a span attribute (see "What Agent Health sends to your agent" below).
+
+**How it reads, and its bounds.** Exact ids (trace id, run ids, session ids)
+are looked up with `FilterLogEvents`, which sees a span within seconds of
+ingestion; Logs Insights — which indexes `aws/spans` with a lag of minutes —
+is used only for service-name + time-window correlation and free-text search.
+Every query is bounded, and a result that hit a bound is reported as partial
+(the Traces tab shows a "results are partial" warning; metrics carry
+`partial: true`) rather than presented as the whole picture:
+
+| Bound | Default | Where |
+|---|---|---|
+| Scan window for id-only requests with no run window | 7 days (`lookbackMs`) | request time → back |
+| Scan window when the request carries the run's window | the run window ± 5 min | run-report Traces tab |
+| Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest part kept |
+| FilterLogEvents pages per scan | 50 (≈ 50 MB) | then Insights fallback / partial |
+| Rows per query (both paths) | 10,000 | partial beyond |
+| Concurrent AWS calls per backend instance | 4 | queued |
+| Log groups discovered for logs without a service name | 20 | partial beyond |
+| Insights query lifetime | 30 s, then `StopQuery` | |
+
+Offset paging of a traces result reuses the snapshot the first page came
+from for 60 s instead of re-scanning.
+
+**What Agent Health sends to your agent.** When a connector has
+`traceContext.propagateHeader` enabled (HTTP agents) Agent Health injects the
+W3C `traceparent` header and a `baggage` header containing
+`agent_health.run.id=<report id>` into every request to the configured agent
+endpoint — including third-party endpoints you configure. An existing
+`baggage` header from your agent config or a `beforeRequest` hook is merged,
+not replaced (Agent Health's key wins on a collision). Disable
+`propagateHeader` if the agent must not receive these headers.
 
 **One-time account setup**
 
@@ -292,7 +321,7 @@ poller already tolerates.
   "Version": "2012-10-17",
   "Statement": [{
     "Effect": "Allow",
-    "Action": ["logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults", "logs:DescribeLogGroups"],
+    "Action": ["logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery", "logs:DescribeLogGroups"],
     "Resource": [
       "arn:aws:logs:<region>:<account>:log-group:aws/spans:*",
       "arn:aws:logs:<region>:<account>:log-group:/agent-health/*"

@@ -368,5 +368,33 @@ describe('BaseConnector', () => {
         expect(headers.traceparent).toBeUndefined();
       });
     });
+
+    it('MERGES a user-configured baggage header with the injected one (ours wins on a key collision)', () => {
+      const { W3CBaggagePropagator, CompositePropagator } = require('@opentelemetry/core');
+      // The OTel API allows ONE global registration; swap it explicitly.
+      propagation.disable();
+      propagation.setGlobalPropagator(new CompositePropagator({ propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()] }));
+      try {
+        const c = new TestConnector();
+        c.traceContext = { propagateHeader: true };
+        const ctx = propagation.setBaggage(
+          trace.setSpanContext(otelContext.active(), { traceId: FAKE_TRACE_ID, spanId: FAKE_SPAN_ID, traceFlags: TraceFlags.SAMPLED, isRemote: false }),
+          propagation.createBaggage({ 'agent_health.run.id': { value: 'report-1' } })
+        );
+        otelContext.with(ctx, () => {
+          // Header casing from an agent config / hook; one entry collides with ours.
+          const headers: Record<string, string> = { Baggage: 'tenant=acme,agent_health.run.id=stale' };
+          c.testInjectTraceparentHeaders(headers);
+          const key = Object.keys(headers).find((k) => k.toLowerCase() === 'baggage')!;
+          const entries = Object.fromEntries(headers[key].split(',').map((e) => e.trim().split('=')));
+          expect(entries).toEqual({ 'agent_health.run.id': 'report-1', tenant: 'acme' });
+          expect(Object.keys(headers).filter((k) => k.toLowerCase() === 'baggage')).toHaveLength(1);
+          expect(headers.traceparent).toBe(`00-${FAKE_TRACE_ID}-${FAKE_SPAN_ID}-01`);
+        });
+      } finally {
+        propagation.disable();
+        propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+      }
+    });
   });
 });

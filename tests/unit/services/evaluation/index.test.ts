@@ -892,6 +892,14 @@ describe('Evaluation Service Index', () => {
       expect(res.runId).toBeNull();
     });
 
+    it('MERGES with baggage already on the context instead of replacing it', async () => {
+      const { registry, headers } = registryCapturingHeaders(null);
+      const outer = otel.propagation.setBaggage(otel.context.active(), otel.propagation.createBaggage({ tenant: { value: 'acme' } }));
+      await otel.context.with(outer, () => invokeAgent(mockAgent, 'claude-3-sonnet', mockTestCase, { registry, correlationId: 'report-9' }));
+      const entries = Object.fromEntries(headers.baggage.split(',').map((e: string) => e.split('=')));
+      expect(entries).toEqual({ tenant: 'acme', 'agent_health.run.id': 'report-9' });
+    });
+
     it('mints a one-off id when the caller has none to offer', async () => {
       const { registry, headers } = registryCapturingHeaders(null);
       await invokeAgent(mockAgent, 'claude-3-sonnet', mockTestCase, { registry });

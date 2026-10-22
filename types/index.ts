@@ -1828,6 +1828,8 @@ export interface MetricsResult {
   partial?: boolean;
   /** See TraceMetrics.correlatedBy. */
   correlatedBy?: 'ids' | 'window' | 'mixed';
+  /** Why `status` is 'error' (trace-store query failed) — the numbers are unknown, not zero. */
+  error?: string;
 }
 
 // ============ Data Source Configuration Types ============

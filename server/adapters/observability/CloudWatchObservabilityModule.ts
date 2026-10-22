@@ -31,13 +31,13 @@ import type {
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../../types/index.js';
 import { transformSpan, type OpenSearchSpanSource } from '../../services/tracesService.js';
-import { buildChunkLookups, groupAndCompute } from '../../services/metricsService.js';
+import { buildChunkLookups, groupAndCompute, failedMetricsResult, isEvalOrJudgeSpan } from '../../services/metricsService.js';
 import { debug } from '../../../lib/debug.js';
 import { computeUseUnion, matchesQuery, spanMs, toMs } from './traceQueryMatch.js';
 import {
   CloudWatchReader,
   classifyCloudWatchError,
-  DEFAULT_LOOKBACK_MS,
+  INSIGHTS_ROW_LIMIT,
   type ICloudWatchReader,
 } from './cloudwatch/CloudWatchReader.js';
 import {
@@ -57,7 +57,27 @@ export interface CloudWatchModuleOptions {
   region: string;
   profile?: string;
   logGroups?: Partial<CloudWatchLogGroups>;
+  /** Scan window for id-only requests that carry no run window (default 7 days). */
   lookbackMs?: number;
+  /** Hard cap on any scan window, explicit or derived (default 30 days). */
+  maxWindowMs?: number;
+}
+
+/**
+ * Bounds. A request never scans more than `maxWindowMs`; an id-only request
+ * with no run window scans the last `lookbackMs`; a request that carries the
+ * run's wall-clock window (the run-report shape) scans just that window ±5 min.
+ */
+export const DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+export const WINDOW_PAD_MS = 5 * 60 * 1000;
+/** How long an id-scan snapshot is reused for offset paging before re-scanning. */
+export const SNAPSHOT_TTL_MS = 60 * 1000;
+
+/** Result of a raw fetch: the candidate records plus whether every path covered its window. */
+export interface FetchedSources {
+  sources: OpenSearchSpanSource[];
+  truncated: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -172,100 +192,84 @@ const encodeOffset = (offset: number): string => encodeURIComponent(JSON.stringi
 // ----------------------------------------------------------------------------
 
 class CloudWatchTracesOperations implements ITracesOperations {
+  private readonly snapshots = new Map<string, { at: number; spans: Span[]; truncated: boolean }>();
+
   constructor(
     private readonly reader: ICloudWatchReader,
     private readonly logGroup: string,
-    private readonly lookbackMs: number
+    private readonly lookbackMs: number,
+    private readonly maxWindowMs: number
   ) {}
 
   /**
    * Scan window: explicit bounds win; otherwise the union of the agents' run
-   * windows (±5 min for clock skew — a run's spans cannot fall outside its own
-   * wall-clock window); otherwise the configured lookback.
+   * windows ±5 min (a run's spans cannot fall outside its own wall-clock
+   * window); otherwise the configured lookback. Always clamped to `maxWindowMs`
+   * (the newest part of the range is kept).
    */
   window(
     options: Pick<TracesQueryOptions, 'startTime' | 'endTime' | 'agents'>,
-    /** Narrow to the agents' windows. Only valid when every correlator on the request belongs to the same run(s) those windows describe. */
+    /** Narrow to the agents' windows. Only valid when every correlator on the request belongs to the run(s) those windows describe. */
     narrowToAgents = true
   ): { startMs: number; endMs: number } {
     const now = Date.now();
+    let startMs: number;
+    let endMs: number;
     if (options.startTime || options.endTime) {
-      const endMs = options.endTime ? toMs(options.endTime) : now;
-      const startMs = options.startTime ? toMs(options.startTime) : endMs - this.lookbackMs;
-      return { startMs, endMs };
+      endMs = options.endTime ? toMs(options.endTime) : now;
+      startMs = options.startTime ? toMs(options.startTime) : endMs - this.lookbackMs;
+    } else {
+      const windows = narrowToAgents ? (options.agents || []).filter((a) => Number.isFinite(a.startedAt) && Number.isFinite(a.endedAt)) : [];
+      if (windows.length > 0) {
+        startMs = Math.min(...windows.map((a) => a.startedAt)) - WINDOW_PAD_MS;
+        endMs = Math.min(now, Math.max(...windows.map((a) => a.endedAt)) + WINDOW_PAD_MS);
+      } else {
+        endMs = now;
+        startMs = now - this.lookbackMs;
+      }
     }
-    const windows = narrowToAgents ? (options.agents || []).filter((a) => Number.isFinite(a.startedAt) && Number.isFinite(a.endedAt)) : [];
-    if (windows.length > 0) {
-      const PAD = 5 * 60 * 1000;
-      return {
-        startMs: Math.min(...windows.map((a) => a.startedAt)) - PAD,
-        endMs: Math.min(now, Math.max(...windows.map((a) => a.endedAt)) + PAD),
-      };
-    }
-    return { startMs: now - this.lookbackMs, endMs: now };
+    if (endMs - startMs > this.maxWindowMs) startMs = endMs - this.maxWindowMs;
+    return { startMs, endMs };
+  }
+
+  /** Exact-id path: FilterLogEvents term scan. */
+  async fetchExact(ids: string[], scan: { startMs: number; endMs: number }): Promise<FetchedSources> {
+    const pattern = idTermsFilterPattern(ids);
+    if (!pattern) return { sources: [], truncated: false };
+    const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern, startMs: scan.startMs, endMs: scan.endMs, limit: INSIGHTS_ROW_LIMIT });
+    debug('CloudWatchTraces', `FilterLogEvents(${pattern}) → ${res.events.length} records, complete=${res.complete}`);
+    return { sources: parseAll(res.events.map((e) => e.message)), truncated: !res.complete };
+  }
+
+  /** Window / free-text path: Logs Insights. */
+  async fetchWindow(options: TracesQueryOptions, useUnion: boolean, scan: { startMs: number; endMs: number }): Promise<FetchedSources> {
+    const res = await this.reader.insights({ logGroups: [this.logGroup], query: buildTracesInsightsQuery(options, useUnion), startMs: scan.startMs, endMs: scan.endMs });
+    debug('CloudWatchTraces', `Insights → ${res.rows.length} records, truncated=${res.truncated}`);
+    return { sources: parseAll(res.rows.map((r) => r['@message']).filter((m): m is string => typeof m === 'string')), truncated: res.truncated };
   }
 
   /**
-   * Fetch raw span sources for a request (before in-memory matching).
+   * Fetch raw span sources for ONE request (the traces route).
    *
    * Exact ids (traceId / runIds / sessionIds) go through FilterLogEvents —
    * synchronous and visible within seconds of ingestion, whereas Logs
-   * Insights indexes `aws/spans` with a lag of up to several minutes (a fresh
-   * run would otherwise show an empty Traces tab and zero metrics). Insights
-   * is used only for what FilterLogEvents cannot express — service-name +
-   * time-window (Strategy C) and free-text search — or when the bounded scan
-   * did not cover the window. Both result sets are unioned; `matchesQuery`
-   * then applies the exact predicate.
+   * Insights indexes `aws/spans` with a lag of minutes. The Insights window
+   * query runs when the request needs it (agents window / free text) and the
+   * exact ids did not already find the AGENT's spans: Agent Health's own
+   * eval/judge spans carry the run id too, so a hit consisting only of those
+   * must not suppress the fallback (that is the Strategy-C-only agent).
    */
-  async fetchSources(
-    options: TracesQueryOptions,
-    useUnion: boolean,
-    extraExactIds: string[] = [],
-    /** Always run the window/Insights query even when exact ids already matched (batch keys that only have a window). */
-    forceWindow = false
-  ): Promise<OpenSearchSpanSource[]> {
+  async fetchSources(options: TracesQueryOptions, useUnion: boolean): Promise<FetchedSources> {
     const { agents, textSearch } = options;
-    // The agents' windows bound the Insights (Strategy C) query by construction.
-    // They may bound the exact-id scan too ONLY in the single-run shape (the
-    // run-report Traces tab: one run's traceId/runId plus that run's window);
-    // a batch chunk mixes keys whose runs happened at different times, so its
-    // id scan must cover the full lookback or an older id-only key sees nothing.
-    const singleRunShape = !forceWindow && extraExactIds.length === 0 && (options.runIds?.filter(Boolean).length ?? 0) <= 1;
-    const { startMs, endMs } = this.window(options);
-    const exactScan = singleRunShape ? { startMs, endMs } : this.window(options, false);
-    const messages: string[] = [];
-
-    const exactPattern = idTermsFilterPattern([...exactCorrelatorIds(options), ...extraExactIds]);
-    let exactComplete = false;
-    if (exactPattern) {
-      const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern: exactPattern, startMs: exactScan.startMs, endMs: exactScan.endMs, limit: 10_000 });
-      messages.push(...res.events.map((e) => e.message));
-      exactComplete = res.complete;
-      debug('CloudWatchTraces', `FilterLogEvents(${exactPattern}) → ${res.events.length} records, complete=${res.complete}`);
-    }
-
+    const scan = this.window(options);
+    const exact = await this.fetchExact(exactCorrelatorIds(options), scan);
     const needsWindow = !!(agents && agents.length > 0) || !!(textSearch && textSearch.trim());
-    const noExact = !exactPattern;
-    // With union semantics a window clause can only ADD spans; skip the slower
-    // Insights round-trip when the exact ids already found this run's spans.
-    const windowStillNeeded = needsWindow && (forceWindow || !useUnion || messages.length === 0);
-    if (noExact || windowStillNeeded || (exactPattern && !exactComplete)) {
-      const rows = await this.reader.insights({
-        logGroups: [this.logGroup],
-        query: buildTracesInsightsQuery(options, useUnion),
-        startMs,
-        endMs,
-      });
-      messages.push(...rows.map((r) => r['@message']).filter((m): m is string => typeof m === 'string'));
-      debug('CloudWatchTraces', `Insights → ${rows.length} records`);
-    }
-
-    const sources: OpenSearchSpanSource[] = [];
-    for (const m of messages) {
-      const rec = parseSpanRecord(m);
-      if (rec) sources.push(cloudWatchSpanToSource(rec));
-    }
-    return sources;
+    const agentSpanFound = exact.sources.some((src) => !isEvalOrJudgeSpan(src.attributes || {}, src.name));
+    const noExact = exactCorrelatorIds(options).length === 0;
+    const windowNeeded = noExact || (needsWindow && (!useUnion || !agentSpanFound)) || exact.truncated;
+    if (!windowNeeded) return exact;
+    const win = await this.fetchWindow(options, useUnion, scan);
+    return { sources: [...exact.sources, ...win.sources], truncated: exact.truncated || win.truncated };
   }
 
   async query(options: TracesQueryOptions) {
@@ -276,33 +280,56 @@ class CloudWatchTracesOperations implements ITracesOperations {
       throw new Error('Either traceId, runIds, sessionId, agents, or time range is required');
     }
 
-    const useUnion = computeUseUnion(options);
-    const sources = await this.fetchSources(options, useUnion);
-    const spans = sources.map((s) => transformSpan(s) as unknown as Span);
-
-    // Exact predicate parity with the OpenSearch reader; dedupe on spanId in
-    // case a span was delivered twice (CloudWatch at-least-once semantics).
-    const seen = new Set<string>();
-    const matched = spans
-      .filter((s) => matchesQuery(s, options, useUnion))
-      .filter((s) => (seen.has(s.spanId) ? false : (seen.add(s.spanId), true)))
-      .sort((x, y) => spanMs(y) - spanMs(x)); // newest first
+    // Offset paging reuses the snapshot the first page was cut from (for a
+    // short TTL) instead of re-scanning the window for every page.
+    const { cursor: _c, size: _s, ...rest } = options;
+    const key = JSON.stringify(rest);
+    const cached = cursor ? this.snapshots.get(key) : undefined;
+    let matched: Span[];
+    let truncated: boolean;
+    if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) {
+      matched = cached.spans;
+      truncated = cached.truncated;
+    } else {
+      const useUnion = computeUseUnion(options);
+      const fetched = await this.fetchSources(options, useUnion);
+      const spans = fetched.sources.map((s) => transformSpan(s) as unknown as Span);
+      // Exact predicate parity with the OpenSearch reader; dedupe on spanId in
+      // case a span was delivered twice (CloudWatch at-least-once semantics).
+      const seen = new Set<string>();
+      matched = spans
+        .filter((s) => matchesQuery(s, options, useUnion))
+        .filter((s) => (seen.has(s.spanId) ? false : (seen.add(s.spanId), true)))
+        .sort((x, y) => spanMs(y) - spanMs(x)); // newest first
+      truncated = fetched.truncated;
+      this.snapshots.set(key, { at: Date.now(), spans: matched, truncated });
+      if (this.snapshots.size > 50) this.snapshots.delete(this.snapshots.keys().next().value!);
+    }
 
     const offset = decodeOffset(cursor);
     const page = matched.slice(offset, offset + size);
     const hasMore = matched.length > offset + size;
-    return { spans: page, total: matched.length, nextCursor: hasMore ? encodeOffset(offset + size) : null, hasMore };
+    return { spans: page, total: matched.length, nextCursor: hasMore ? encodeOffset(offset + size) : null, hasMore, truncated };
   }
 
   async getByTraceId(traceId: string): Promise<Span[]> {
-    return (await this.query({ traceId, size: 10_000 })).spans;
+    return (await this.query({ traceId, size: INSIGHTS_ROW_LIMIT })).spans;
   }
 
   async getByRunIds(runIds: string[]): Promise<Span[]> {
     const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
     if (!valid.length) return [];
-    return (await this.query({ runIds: valid, size: 10_000 })).spans;
+    return (await this.query({ runIds: valid, size: INSIGHTS_ROW_LIMIT })).spans;
   }
+}
+
+function parseAll(messages: string[]): OpenSearchSpanSource[] {
+  const sources: OpenSearchSpanSource[] = [];
+  for (const m of messages) {
+    const rec = parseSpanRecord(m);
+    if (rec) sources.push(cloudWatchSpanToSource(rec));
+  }
+  return sources;
 }
 
 // ----------------------------------------------------------------------------
@@ -313,38 +340,47 @@ class CloudWatchLogsOperations implements ILogsOperations {
   constructor(
     private readonly reader: ICloudWatchReader,
     private readonly template: string,
-    private readonly lookbackMs: number
+    private readonly lookbackMs: number,
+    private readonly maxWindowMs: number
   ) {}
 
-  /** Log groups to search: the template resolved for the service, else every group under the template prefix. */
-  async resolveGroups(serviceName?: string): Promise<string[]> {
+  /** Log groups to search: the template resolved for the service, else the groups under the template prefix (bounded by the reader). */
+  async resolveGroups(serviceName?: string): Promise<{ groups: string[]; truncated: boolean }> {
     const resolved = resolveLogGroupTemplate(this.template, serviceName);
-    if (resolved) return [resolved];
+    if (resolved) return { groups: [resolved], truncated: false };
     const prefix = logGroupTemplatePrefix(this.template);
-    return prefix ? this.reader.describeLogGroups(prefix) : [];
+    if (!prefix) return { groups: [], truncated: false };
+    const res = await this.reader.describeLogGroups(prefix);
+    return { groups: res.names, truncated: res.truncated };
   }
 
-  async query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number }> {
+  async query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number; truncated?: boolean }> {
     const { traceId, runId, serviceName, query, startTime, endTime, size = 100 } = options;
-    const groups = await this.resolveGroups(serviceName);
-    if (groups.length === 0) return { logs: [], total: 0 };
+    const { groups, truncated: groupsTruncated } = await this.resolveGroups(serviceName);
+    if (groups.length === 0) return { logs: [], total: 0, truncated: groupsTruncated };
 
     const now = Date.now();
     const endMs = endTime ?? now;
-    // Id lookups search the full lookback (parity with the OpenSearch reader's
-    // "regardless of age" for runId); browsing defaults to the last hour.
-    const startMs = startTime ?? (traceId || runId ? endMs - this.lookbackMs : endMs - 60 * 60 * 1000);
+    // Id lookups search the lookback; browsing defaults to the last hour.
+    let startMs = startTime ?? (traceId || runId ? endMs - this.lookbackMs : endMs - 60 * 60 * 1000);
+    if (endMs - startMs > this.maxWindowMs) startMs = endMs - this.maxWindowMs;
 
     let pattern = '';
     if (traceId) pattern = traceIdFilterPattern(traceId);
     else if (runId) pattern = JSON.stringify(runId); // quoted term match anywhere in the event
     else if (query) pattern = JSON.stringify(query);
 
+    // FilterLogEvents returns oldest-first; the newest `size` matches are what
+    // the caller wants, so a group is scanned past `size` (bounded by the reader's
+    // page budget) and trimmed after sorting rather than cut off at the oldest.
+    const perGroupLimit = Math.min(INSIGHTS_ROW_LIMIT, size * 10);
+    let anyTruncated = groupsTruncated;
     const perGroup = await Promise.all(
       groups.map(async (g) => {
         try {
-          const { events } = await this.reader.filterEvents({ logGroup: g, pattern, startMs, endMs, limit: size });
-          return events.map((e) => cloudWatchLogToEntry(e.message, e.timestamp, g));
+          const res = await this.reader.filterEvents({ logGroup: g, pattern, startMs, endMs, limit: perGroupLimit });
+          if (!res.complete) anyTruncated = true;
+          return res.events.map((e) => cloudWatchLogToEntry(e.message, e.timestamp, g));
         } catch (err) {
           const c = classifyCloudWatchError(err);
           if (c.category === 'index_not_found') return []; // group for this service does not exist yet
@@ -360,7 +396,7 @@ class CloudWatchLogsOperations implements ILogsOperations {
     }
     logs.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
     const page = logs.slice(0, size);
-    return { logs: page as unknown as OpenSearchLog[], total: logs.length };
+    return { logs: page as unknown as OpenSearchLog[], total: logs.length, truncated: anyTruncated || logs.length > size };
   }
 }
 
@@ -381,10 +417,12 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
   }
 
   /**
-   * One traces fetch per chunk with every correlator unioned (run ids via
-   * FilterLogEvents, Strategy-C windows via Insights when needed), then the
-   * SAME attribution + math as the OpenSearch backend (`buildChunkLookups` /
-   * `groupAndCompute`), so both report identical numbers and `correlatedBy`.
+   * Per 50-key chunk: exact ids (run ids, session ids, trace ids) through
+   * FilterLogEvents over the lookback; then the Insights window ONLY for keys
+   * whose window hints did not get an AGENT span from the exact phase (eval /
+   * judge spans do not count — they carry the run id themselves). A store
+   * failure yields `status: 'error'` for the chunk, never "no spans".
+   * Attribution + math are the shared `groupAndCompute`.
    */
   async forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]> {
     const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
@@ -394,29 +432,45 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
     for (let i = 0; i < valid.length; i += CHUNK) {
       const chunk = valid.slice(i, i + CHUNK);
       const lookups = buildChunkLookups(chunk, hints?.sessionIdByRunId, hints?.traceIdByRunId, hints?.agentsByRunId);
-      let sources: OpenSearchSpanSource[] = [];
       try {
-        const traceIds = [...lookups.traceIdToRunId.keys()];
-        const query: TracesQueryOptions = {
-          runIds: lookups.runIdCorrelators,
-          agents: lookups.agentHints.length ? lookups.agentHints : undefined,
-          // Strategy A ids ride along as plain correlator terms (FilterLogEvents
-          // matches them anywhere in the record); the attribution step maps
-          // each span back to its key by traceId.
-          ...(traceIds.length === 1 ? { traceId: traceIds[0] } : {}),
-        };
-        const extraIds = [...lookups.sessionIdToRunId.keys(), ...(traceIds.length > 1 ? traceIds : [])];
-        // A key with only a window hint (surrogate) can only be served by the
-        // window query, so it must run even when other keys' ids already hit.
-        const hasSurrogateKey = lookups.runIdCorrelators.length < chunk.length;
-        sources = await this.traces.fetchSources(query, true, extraIds, hasSurrogateKey);
+        const exactIds = [...lookups.runIdCorrelators, ...lookups.sessionIdToRunId.keys(), ...lookups.traceIdToRunId.keys()];
+        // Mixed chunk: keys' runs happened at different times → full lookback for the id scan.
+        const exact = await this.traces.fetchExact(exactIds, this.traces.window({}, false));
+        let sources = exact.sources;
+        let truncated = exact.truncated;
+
+        // Which keys already have agent spans by exact id?
+        const idSet = new Set(lookups.runIdCorrelators);
+        const found = new Set<string>();
+        for (const src of exact.sources) {
+          const a = src.attributes || {};
+          if (isEvalOrJudgeSpan(a, src.name)) continue;
+          const key =
+            ([a['agent_health.run.id'], a['gen_ai.conversation.id']].find((v) => typeof v === 'string' && idSet.has(v)) as string | undefined) ??
+            (typeof a['session.id'] === 'string' ? lookups.sessionIdToRunId.get(a['session.id'] as string) : undefined) ??
+            (src.traceId ? lookups.traceIdToRunId.get(src.traceId) : undefined);
+          if (key) found.add(key);
+        }
+        // Window hints of keys the exact phase did not find an agent span for.
+        const pendingHints: TracesQueryOptions['agents'] = [];
+        for (const list of lookups.hintsByServiceName.values()) {
+          for (const { key, hint } of list) if (!found.has(key)) pendingHints.push(hint);
+        }
+        if (pendingHints.length > 0) {
+          const win = await this.traces.fetchWindow({ agents: pendingHints }, true, this.traces.window({ agents: pendingHints }));
+          sources = [...sources, ...win.sources];
+          truncated = truncated || win.truncated;
+        }
+
+        const seen = new Set<string>();
+        const unique = sources.filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
+        unique.sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
+        results.push(...groupAndCompute(chunk, unique, lookups, truncated));
       } catch (e: any) {
-        console.warn(`[CloudWatchMetrics] span query failed for ${chunk.length} run id(s): ${e?.message ?? e}`);
+        const c = classifyCloudWatchError(e);
+        console.warn(`[CloudWatchMetrics] span query failed for ${chunk.length} run id(s): ${c.message}`);
+        results.push(...chunk.map((id) => failedMetricsResult(id, c.message)));
       }
-      const seen = new Set<string>();
-      const unique = sources.filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
-      unique.sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
-      results.push(...groupAndCompute(chunk, unique, lookups, false));
     }
     return results;
   }
@@ -439,16 +493,17 @@ export class CloudWatchObservabilityModule implements IObservabilityModule {
       logs: options.logGroups?.logs || DEFAULT_CLOUDWATCH_LOG_GROUPS.logs,
     };
     const lookbackMs = options.lookbackMs ?? DEFAULT_LOOKBACK_MS;
-    this.reader = reader ?? new CloudWatchReader({ region: options.region, profile: options.profile, lookbackMs });
-    const traces = new CloudWatchTracesOperations(this.reader, this.logGroups.traces, lookbackMs);
+    const maxWindowMs = options.maxWindowMs ?? DEFAULT_MAX_WINDOW_MS;
+    this.reader = reader ?? new CloudWatchReader({ region: options.region, profile: options.profile });
+    const traces = new CloudWatchTracesOperations(this.reader, this.logGroups.traces, lookbackMs, maxWindowMs);
     this.traces = traces;
-    this.logs = new CloudWatchLogsOperations(this.reader, this.logGroups.logs, lookbackMs);
+    this.logs = new CloudWatchLogsOperations(this.reader, this.logGroups.logs, lookbackMs, maxWindowMs);
     this.metrics = new CloudWatchMetricsOperations(traces);
   }
 
   async health(): Promise<HealthStatus> {
     try {
-      const groups = await this.reader.describeLogGroups(this.logGroups.traces);
+      const { names: groups } = await this.reader.describeLogGroups(this.logGroups.traces);
       if (groups.includes(this.logGroups.traces)) {
         return { status: 'ok', index: this.logGroups.traces };
       }
@@ -467,7 +522,7 @@ export class CloudWatchObservabilityModule implements IObservabilityModule {
 
   /** Log groups currently present under the logs template prefix (Test Connection detail). */
   async listLogGroups(): Promise<string[]> {
-    return this.reader.describeLogGroups(logGroupTemplatePrefix(this.logGroups.logs));
+    return (await this.reader.describeLogGroups(logGroupTemplatePrefix(this.logGroups.logs))).names;
   }
 
   isConfigured(): boolean {

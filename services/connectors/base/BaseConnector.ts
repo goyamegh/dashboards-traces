@@ -338,6 +338,22 @@ export abstract class BaseConnector implements AgentConnector {
    */
   protected injectTraceparentHeaders(headers: Record<string, string>): void {
     if (!this.traceContext?.propagateHeader) return;
+    // A user-configured `baggage` header (agent config / beforeRequest hook)
+    // must survive: the W3C baggage propagator REPLACES the header, so merge
+    // the user's entries back in afterwards (ours win on a key collision).
+    const userBaggage = Object.entries(headers).find(([k]) => k.toLowerCase() === 'baggage');
+    if (userBaggage) delete headers[userBaggage[0]]; // re-added below, merged
     propagation.inject(otelContext.active(), headers);
+    if (userBaggage) {
+      const [userKey, userValue] = userBaggage;
+      const injectedKey = Object.keys(headers).find((k) => k.toLowerCase() === 'baggage');
+      if (!injectedKey) {
+        headers[userKey] = userValue; // nothing of ours to add — user's header untouched
+        return;
+      }
+      const ours = new Set(headers[injectedKey].split(',').map((e) => e.split('=')[0].trim()));
+      const kept = userValue.split(',').map((e) => e.trim()).filter((e) => e && !ours.has(e.split('=')[0].trim()));
+      if (kept.length) headers[injectedKey] = `${headers[injectedKey]},${kept.join(',')}`;
+    }
   }
 }

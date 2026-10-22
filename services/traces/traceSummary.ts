@@ -61,7 +61,7 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
 
   // Usage is counted on leaf usage spans only, so a framework that mirrors
   // the per-call totals onto its root (`invoke_agent`) is not counted twice.
-  for (const s of selectUsageSpans(flat)) {
+  for (const s of selectUsageSpans(flat).counted) {
     const it = readInputTokens(s.attributes);
     const ot = readOutputTokens(s.attributes);
     inputTokens += it;

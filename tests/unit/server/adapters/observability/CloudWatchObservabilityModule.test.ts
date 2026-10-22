@@ -5,13 +5,15 @@
 
 import {
   CloudWatchObservabilityModule,
+  DEFAULT_LOOKBACK_MS,
+  DEFAULT_MAX_WINDOW_MS,
   buildTracesInsightsQuery,
   traceIdFilterPattern,
   idTermsFilterPattern,
   exactCorrelatorIds,
   q,
 } from '@/server/adapters/observability/CloudWatchObservabilityModule';
-import type { ICloudWatchReader, FilterEventsResult, InsightsRow } from '@/server/adapters/observability/cloudwatch/CloudWatchReader';
+import type { ICloudWatchReader, FilterEventsResult, InsightsResult, LogGroupsResult } from '@/server/adapters/observability/cloudwatch/CloudWatchReader';
 import { classifyCloudWatchError } from '@/server/adapters/observability/cloudwatch/CloudWatchReader';
 import {
   cloudWatchSpanToSource,
@@ -41,11 +43,16 @@ const T0_MS = Math.floor(Number(records[0].startTimeUnixNano) / 1e6);
 class FakeReader implements ICloudWatchReader {
   calls: { filter: any[]; insights: any[]; describe: string[] } = { filter: [], insights: [], describe: [] };
   groups: Record<string, string[]> = { 'aws/spans': spanMessages, [`/agent-health/${SERVICE}`]: logMessages };
+  /** Pretend the window was not fully scanned (nextToken left over). */
   incompleteFilter = false;
+  failFilter?: Error;
   failInsights?: Error;
+  insightsTruncated = false;
+  groupsTruncated = false;
 
   async filterEvents(opts: { logGroup: string; pattern: string; startMs: number; endMs: number; limit: number }): Promise<FilterEventsResult> {
     this.calls.filter.push(opts);
+    if (this.failFilter) throw this.failFilter;
     const msgs = this.groups[opts.logGroup];
     if (!msgs) {
       const err: any = new Error('The specified log group does not exist.');
@@ -62,16 +69,17 @@ class FakeReader implements ICloudWatchReader {
     return { events: events.slice(0, opts.limit), complete: true };
   }
 
-  async insights(opts: { logGroups: string[]; query: string; startMs: number; endMs: number }): Promise<InsightsRow[]> {
+  async insights(opts: { logGroups: string[]; query: string; startMs: number; endMs: number }): Promise<InsightsResult> {
     this.calls.insights.push(opts);
     if (this.failInsights) throw this.failInsights;
     // The fake returns the whole group; the module's in-memory predicate must do the filtering.
-    return opts.logGroups.flatMap((g) => (this.groups[g] || []).map((m) => ({ '@message': m })));
+    const rows = opts.logGroups.flatMap((g) => (this.groups[g] || []).map((m) => ({ '@message': m })));
+    return { rows, truncated: this.insightsTruncated };
   }
 
-  async describeLogGroups(prefix: string): Promise<string[]> {
+  async describeLogGroups(prefix: string): Promise<LogGroupsResult> {
     this.calls.describe.push(prefix);
-    return Object.keys(this.groups).filter((g) => g.startsWith(prefix));
+    return { names: Object.keys(this.groups).filter((g) => g.startsWith(prefix)), truncated: this.groupsTruncated };
   }
 }
 
@@ -237,8 +245,8 @@ describe('CloudWatchObservabilityModule', () => {
       const root = res.spans.find((s) => s.spanId === 'aaad0bc29275b362')!;
       expect(root.status).toBe('OK');
       expect(root.attributes!['service.name']).toBe(SERVICE);
-      // 14-day default lookback when no bounds are given
-      expect(reader.calls.filter[0].endMs - reader.calls.filter[0].startMs).toBe(14 * 24 * 3600 * 1000);
+      // default lookback when no bounds are given
+      expect(reader.calls.filter[0].endMs - reader.calls.filter[0].startMs).toBe(DEFAULT_LOOKBACK_MS);
     });
 
     it('falls back to Logs Insights when the bounded FilterLogEvents scan is incomplete', async () => {
@@ -260,6 +268,22 @@ describe('CloudWatchObservabilityModule', () => {
       expect(reader.calls.filter[0].pattern).toBe(`?"${'f'.repeat(32)}" ?"${RUN}"`);
       expect(reader.calls.insights).toHaveLength(0); // precise ids found the run → no window round-trip
       expect(res.total).toBe(12);
+    });
+
+    it('an exact hit consisting only of Agent Health eval/judge spans does NOT suppress the window (reviewer probe)', async () => {
+      // The eval `test_case` span carries the run id; the agent's own spans do not (Strategy-C-only agent).
+      const evalSpan = { ...records[0], traceId: 'e'.repeat(32), spanId: 'eval000000000001', parentSpanId: undefined, name: 'test_case',
+        attributes: { 'agent_health.run.id': 'run-eval-only', 'gen_ai.operation.name': 'evaluation' } };
+      reader.groups['aws/spans'] = [...spanMessages, JSON.stringify(evalSpan)];
+      const res = await mod(reader).traces.query({ runIds: ['run-eval-only'], agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] });
+      expect(reader.calls.insights).toHaveLength(1); // window still consulted
+      expect(res.total).toBe(13); // eval span + the agent's 12 window spans
+    });
+
+    it('a capped id scan is reported as truncated and still falls back to Insights', async () => {
+      reader.incompleteFilter = true;
+      const res = await mod(reader).traces.query({ traceId: TRACE });
+      expect(res.truncated).toBe(true);
     });
 
     it('run-report shape falls through to the Insights window when the exact ids find nothing (Strategy C only agent)', async () => {
@@ -367,7 +391,8 @@ describe('CloudWatchObservabilityModule', () => {
 
     it('a missing per-service group is empty, not an error', async () => {
       const res = await mod(reader).logs.query({ traceId: TRACE, serviceName: 'never-logged' });
-      expect(res).toEqual({ logs: [], total: 0 });
+      expect(res).toMatchObject({ logs: [], total: 0 });
+      expect(res.truncated).toBeFalsy();
     });
 
     it('runId and free-text use quoted-term patterns; text narrows an id lookup in memory', async () => {
@@ -387,7 +412,7 @@ describe('CloudWatchObservabilityModule', () => {
       expect(browse.endMs - browse.startMs).toBe(60 * 60 * 1000);
       await m.logs.query({ serviceName: SERVICE, traceId: TRACE });
       const byId = reader.calls.filter.at(-1);
-      expect(byId.endMs - byId.startMs).toBe(14 * 24 * 3600 * 1000);
+      expect(byId.endMs - byId.startMs).toBe(DEFAULT_LOOKBACK_MS);
     });
   });
 
@@ -397,6 +422,7 @@ describe('CloudWatchObservabilityModule', () => {
       expect(reader.calls.filter[0].pattern).toBe(`"${RUN}"`);
       expect(reader.calls.insights).toHaveLength(0);
       expect(m).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 21476, outputTokens: 843, llmCalls: 3, toolCalls: 3, status: 'success' });
+      expect(m.partial).toBeUndefined();
     });
 
     it('forRun threads upstream hints (traceId / agents) and stamps correlatedBy', async () => {
@@ -404,54 +430,73 @@ describe('CloudWatchObservabilityModule', () => {
       expect(m.inputTokens).toBe(21476);
       expect(m.correlatedBy).toBe('ids'); // traceId is an id correlator
       expect(m.hasSpans).toBe(true);
+      expect(reader.calls.insights).toHaveLength(0); // agent spans found by id → no window
     });
 
-    it('forRuns serves a window-only (surrogate) key alongside an id key — the window query runs even though ids hit', async () => {
-      // A second trace of the same service, with a run id nobody asks for.
-      const flip = (id: string) => id.split('').reverse().join(''); // injective id rewrite
+    it('an exact hit that is ONLY the eval span does not suppress the window: the agent is found via Strategy C (reviewer probe)', async () => {
+      const evalSpan = { ...records[0], traceId: 'e'.repeat(32), spanId: 'eval000000000001', parentSpanId: undefined, name: 'test_case',
+        attributes: { 'agent_health.run.id': 'run-eval-only', 'gen_ai.operation.name': 'evaluation' } };
+      const agentOnly = records.map((r) => ({ ...r, attributes: { ...r.attributes, 'agent_health.run.id': undefined, 'gen_ai.conversation.id': undefined } }));
+      reader.groups['aws/spans'] = [JSON.stringify(evalSpan), ...agentOnly.map((r) => JSON.stringify(r))];
+      // Same shape as the reviewer's probe: the eval span IS found by exact id (traceId)…
+      const m = await mod(reader).metrics.forRun('run-eval-only', { traceId: 'e'.repeat(32), agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] });
+      expect(reader.calls.filter[0].pattern).toContain('e'.repeat(32));
+      // …but, being eval-only, must not suppress the window.
+      expect(reader.calls.insights).toHaveLength(1);
+      expect(m.inputTokens).toBe(21476);
+      expect(m.llmCalls).toBe(3);
+      expect(m.correlatedBy).toBe('mixed'); // eval span by id + agent spans by window
+    });
+
+    it('one key\'s id hit does not suppress a sibling key\'s window fallback (per-key decision)', async () => {
+      const flip = (id: string) => id.split('').reverse().join('');
       const other = records.map((r) => ({ ...r, traceId: 'b'.repeat(32), spanId: flip(r.spanId!), parentSpanId: r.parentSpanId ? flip(r.parentSpanId) : undefined,
-        attributes: { ...r.attributes, 'agent_health.run.id': 'someone-else', 'gen_ai.conversation.id': 'other-sess' } }));
+        attributes: { ...r.attributes, 'agent_health.run.id': undefined, 'gen_ai.conversation.id': undefined } }));
       reader.groups['aws/spans'] = [...spanMessages, ...other.map((r) => JSON.stringify(r))];
-      const [surrogate, real] = await mod(reader).metrics.forRuns(['report-xyz', RUN], {
+      const [byId, byWindow] = await mod(reader).metrics.forRuns([RUN, 'report-xyz'], {
         agentsByRunId: { 'report-xyz': [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] },
       });
       expect(reader.calls.insights).toHaveLength(1);
-      expect(real).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
-      expect(surrogate).toMatchObject({ runId: 'report-xyz', inputTokens: 21476, correlatedBy: 'window' });
+      expect(byId).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
+      expect(byWindow).toMatchObject({ runId: 'report-xyz', correlatedBy: 'window' });
+      expect(byWindow.inputTokens).toBeGreaterThan(0);
     });
 
-    it('forRuns does not let one key\'s window hint hide an older id-only key (scan covers the lookback)', async () => {
-      // The id-only run happened long before the window-hinted key's run.
-      const [surrogate, real] = await mod(reader).metrics.forRuns(['report-xyz', RUN], {
+    it('forRuns does not let one key\'s window hint hide an older id-only key (id scan covers the lookback)', async () => {
+      const [, real] = await mod(reader).metrics.forRuns(['report-xyz', RUN], {
         agentsByRunId: { 'report-xyz': [{ serviceName: 'some-other-service', startedAt: T0_MS + 10 * 86_400_000, endedAt: T0_MS + 10 * 86_400_000 + 60_000 }] },
       });
       const idScan = reader.calls.filter[0];
-      expect(idScan.endMs - idScan.startMs).toBe(14 * 24 * 3600 * 1000); // not narrowed to the other key's window
+      expect(idScan.endMs - idScan.startMs).toBe(DEFAULT_LOOKBACK_MS);
       expect(real).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
-      expect(surrogate.totalTokens).toBe(0);
     });
 
-    it('forRuns falls back to Insights when the bounded FilterLogEvents scan is incomplete', async () => {
+    it('a capped scan marks every key of the chunk partial', async () => {
       reader.incompleteFilter = true;
       const m = await mod(reader).metrics.forRun(RUN);
-      expect(reader.calls.insights).toHaveLength(1);
-      expect(m.totalTokens).toBe(22319);
+      expect(m.partial).toBe(true);
     });
 
-    it('forRuns groups spans per run and returns empty metrics for unknown runs', async () => {
-      const [a, b] = await mod(reader).metrics.forRuns([RUN, 'unknown-run']);
-      expect(a.totalTokens).toBe(22319);
-      expect(b).toMatchObject({ runId: 'unknown-run', totalTokens: 0, status: 'pending' });
-      expect(await mod(reader).metrics.forRuns([])).toEqual([]);
-    });
-
-    it('a failing query degrades to empty metrics instead of throwing', async () => {
-      reader.incompleteFilter = true;
-      reader.failInsights = new Error('ThrottlingException');
+    it('a trace-store failure yields status error (unknown), never "no spans" (reviewer probe)', async () => {
+      reader.failFilter = Object.assign(new Error('simulated throttle'), { name: 'ThrottlingException' });
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const [m] = await mod(reader).metrics.forRuns([RUN]);
+      expect(m.status).toBe('error');
+      expect(m.error).toMatch(/simulated throttle/);
+      expect(m.hasSpans).toBeUndefined();
       expect(m.totalTokens).toBe(0);
-      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('a failing chunk does not poison a successful one', async () => {
+      const ids = Array.from({ length: 51 }, (_, i) => (i === 50 ? RUN : `k${i}`)); // RUN lands alone in chunk 2
+      let n = 0;
+      const orig = reader.filterEvents.bind(reader);
+      reader.filterEvents = async (o) => { if (n++ === 0) throw new Error('boom'); return orig(o); };
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await mod(reader).metrics.forRuns(ids);
+      expect(res.slice(0, 50).every((m) => m.status === 'error')).toBe(true);
+      expect(res[50]).toMatchObject({ runId: RUN, inputTokens: 21476, status: 'success' });
       warn.mockRestore();
     });
   });
