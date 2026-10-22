@@ -178,4 +178,27 @@ describe('FileObservabilityModule', () => {
   it('logs.query returns empty (file logs backend is a future addition)', async () => {
     expect(await mod.logs.query({ runId: 'r' })).toEqual({ logs: [], total: 0 });
   });
+
+  describe('metrics (served by /api/metrics for the zero-config file store)', () => {
+    it('derives per-run tokens / calls / tools from the stored spans with the shared math', async () => {
+      await mod.ingest([
+        span({ traceId: 'tm', spanId: 'root', name: 'invoke_agent', attributes: { 'agent_health.run.id': 'run-m', 'gen_ai.operation.name': 'invoke_agent', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 300, 'gen_ai.usage.output_tokens': 30 } }),
+        span({ traceId: 'tm', spanId: 'c1', parentSpanId: 'root', name: 'chat', startMs: Date.parse('2024-01-01T00:00:01Z'), attributes: { 'agent_health.run.id': 'run-m', 'gen_ai.operation.name': 'chat', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 100, 'gen_ai.usage.output_tokens': 10 } }),
+        span({ traceId: 'tm', spanId: 'c2', parentSpanId: 'root', name: 'chat', startMs: Date.parse('2024-01-01T00:00:02Z'), attributes: { 'agent_health.run.id': 'run-m', 'gen_ai.operation.name': 'chat', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 200, 'gen_ai.usage.output_tokens': 20 } }),
+        span({ traceId: 'tm', spanId: 't1', parentSpanId: 'root', name: 'execute_tool search_docs', startMs: Date.parse('2024-01-01T00:00:03Z'), attributes: { 'agent_health.run.id': 'run-m', 'gen_ai.tool.name': 'search_docs' } }),
+      ]);
+      const m = await mod.metrics.forRun('run-m');
+      expect(m).toMatchObject({ runId: 'run-m', traceId: 'tm', inputTokens: 300, outputTokens: 30, llmCalls: 2, toolCalls: 1, toolsUsed: ['search_docs'], status: 'success', correlatedBy: 'ids' });
+      const [known, unknown] = await mod.metrics.forRuns(['run-m', 'nope']);
+      expect(known.totalTokens).toBe(330);
+      expect(unknown).toMatchObject({ runId: 'nope', totalTokens: 0, status: 'pending' });
+    });
+
+    it('correlates a window-only (surrogate) key by service.name + run window', async () => {
+      const t0 = Date.parse('2024-02-01T00:00:00Z');
+      await mod.ingest([span({ traceId: 'tw', spanId: 'w1', name: 'chat', startMs: t0, attributes: { 'service.name': 'svc-w', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 7 } })]);
+      const [m] = await mod.metrics.forRuns(['report-1'], { agentsByRunId: { 'report-1': [{ serviceName: 'svc-w', startedAt: t0 - 1000, endedAt: t0 + 1000 }] } });
+      expect(m).toMatchObject({ runId: 'report-1', inputTokens: 7, correlatedBy: 'window' });
+    });
+  });
 });

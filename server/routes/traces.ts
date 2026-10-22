@@ -84,6 +84,11 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         realSpans = (result.spans || []) as Span[];
         nextCursor = result.nextCursor || null;
         hasMore = result.hasMore || false;
+        if (result.truncated) {
+          // Never present a capped scan as the whole picture.
+          warning = `Results are partial: the ${backend} query hit its scan/row limit; narrow the time range or filters to see everything.`;
+          warningCategory = 'unknown';
+        }
       } catch (e: any) {
         const classified = classifyOpenSearchError(e);
         console.warn(`[TracesAPI] ${backend} query failed (${classified.category}):`, classified.message);

@@ -99,10 +99,9 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
       }
     }
 
+    // Every backend — including the zero-config file trace store fed by the
+    // embedded OTLP receiver — derives metrics from the spans it holds.
     const obs = getObservabilityModule(req);
-    if (obs.describe().type === 'file') {
-      return res.status(503).json({ error: 'Observability data source not configured' });
-    }
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
@@ -204,23 +203,14 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
 
     if (realRunIds.length > 0) {
       const obs = getObservabilityModule(req);
-
-      if (obs.describe().type === 'file') {
+      try {
+        realResults = await obs.metrics.forRuns(realRunIds, { sessionIdByRunId, traceIdByRunId, agentsByRunId });
+      } catch (e: any) {
         realResults = realRunIds.map((runId: string) => ({
           runId,
-          error: 'Observability data source not configured',
+          error: e.message,
           status: 'error'
         }));
-      } else {
-        try {
-          realResults = await obs.metrics.forRuns(realRunIds, { sessionIdByRunId, traceIdByRunId, agentsByRunId });
-        } catch (e: any) {
-          realResults = realRunIds.map((runId: string) => ({
-            runId,
-            error: e.message,
-            status: 'error'
-          }));
-        }
       }
     }
 

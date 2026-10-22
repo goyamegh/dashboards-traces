@@ -33,6 +33,8 @@ const groups: Record<string, string[]> = {
   '/agent-health/demo-retrieval-agent': (logFixture as any[]).map((r) => JSON.stringify(r)),
 };
 let authFailure: Error | null = null;
+/** When set, FilterLogEvents answers with a leftover nextToken (capped scan). */
+let capScan = false;
 
 function fakeSend(command: any): any {
   sent.push(command);
@@ -50,7 +52,8 @@ function fakeSend(command: any): any {
     const events = msgs
       .filter((s) => (m ? JSON.parse(s).traceId === m[1] : terms.length ? terms.some((t: string) => s.includes(t)) : true))
       .map((s) => ({ message: s, timestamp: 1788467284282, logStreamName: 'default' }));
-    return { events };
+    // A capped scan: CloudWatch keeps handing back a nextToken (the reader stops at its page budget).
+    return capScan ? { events: input.nextToken ? [] : events, nextToken: 'more' } : { events };
   }
   if (command instanceof StartQueryCommand) {
     return { queryId: `q-${input.logGroupNames.join(',')}` };
@@ -114,6 +117,8 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
   beforeEach(() => {
     sent.length = 0;
     authFailure = null;
+    capScan = false;
+    __resetObservabilityCachesForTests();
   });
 
   it('POST /api/traces by traceId returns the normalized tree via FilterLogEvents', async () => {
@@ -226,6 +231,27 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     } finally {
       groups['/agent-health/demo-retrieval-agent'] = (logFixture as any[]).map((r) => JSON.stringify(r));
     }
+  });
+
+  it('a capped scan is surfaced as a partial-results warning on /api/traces and partial metrics', async () => {
+    capScan = true;
+    const traces = await request(app).post('/api/traces').send({ traceId: TRACE });
+    expect(traces.status).toBe(200);
+    expect(traces.body.total).toBe(12);
+    expect(traces.body.warning).toMatch(/partial/i);
+    const metrics = await request(app).get(`/api/metrics/${RUN}`);
+    expect(metrics.body).toMatchObject({ runId: RUN, inputTokens: 21476, partial: true });
+  });
+
+  it('a trace-store failure on /api/metrics is status error (unknown), not "no spans" (reviewer probe)', async () => {
+    authFailure = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await request(app).get(`/api/metrics/${RUN}`);
+    warn.mockRestore();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ runId: RUN, status: 'error', totalTokens: 0 });
+    expect(res.body.error).toMatch(/Rate exceeded/);
+    expect(res.body.hasSpans).toBeUndefined();
   });
 
   it('surfaces expired credentials as a classified auth error instead of a 500 stack', async () => {

@@ -455,10 +455,14 @@ export async function invokeAgent(
   // baggage stamps it on every span, so its spans correlate even when the
   // trace id is lost. It never replaces the agent's own returned `runId` —
   // a REST agent that echoes nothing still reports no run id, exactly as before.
+  // Merged into whatever baggage is already on the context (a caller's own
+  // entries survive; only this key is set).
   const agentHealthRunId = correlationId ?? request.runId ?? `ah-${uuidv4()}`;
+  const activeCtx = otelContext.active();
+  const existing = propagation.getBaggage(activeCtx) ?? propagation.createBaggage();
   const baggageCtx = propagation.setBaggage(
-    otelContext.active(),
-    propagation.createBaggage({ [BAGGAGE_KEY_AGENT_HEALTH_RUN_ID]: { value: agentHealthRunId } })
+    activeCtx,
+    existing.setEntry(BAGGAGE_KEY_AGENT_HEALTH_RUN_ID, { value: agentHealthRunId })
   );
 
   // Execute via connector (with timing)

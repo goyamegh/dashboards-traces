@@ -71,6 +71,8 @@ interface OpenSearchSpanSource {
   traceId?: string;
   spanId?: string;
   parentSpanId?: string;
+  /** Top-level OTel resource service name (read by the service-window attribution). */
+  serviceName?: string;
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
@@ -133,7 +135,7 @@ function readAttrs(span: OpenSearchSpanSource): Record<string, any> {
  * they are not the agent's own work and must not inflate its token/cost/LLM
  * counts.
  */
-function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
+export function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
   return (
     attrs['gen_ai.operation.name'] === 'evaluation' ||
     spanName === 'test_case' ||
@@ -367,6 +369,18 @@ export function groupAndCompute(
   });
 }
 
+/**
+ * The per-key result for a chunk whose trace-store query FAILED (timeout,
+ * 5xx, throttle, rejected query). Deliberately NOT `computeMetricsFromSpans(runId, [])`:
+ * that shape (`status: 'pending', hasSpans: false`) means "we looked and
+ * found nothing" and renders as "no spans" — a transient store failure must
+ * instead say the truth: unknown, retry.
+ */
+export function failedMetricsResult(runId: string, error: string): MetricsResult {
+  const { hasSpans: _unknown, ...empty } = computeMetricsFromSpans(runId, []);
+  return { ...empty, status: 'error', error: error || 'trace-store query failed' };
+}
+
 /** The `size` cap of the batch query; results are flagged `partial` when hit. */
 const BATCH_QUERY_SIZE = 10000;
 
@@ -536,8 +550,10 @@ export function computeMetricsFromSpans(
   // counted twice (see services/traces/tokenUsage.ts).
   const usage = sumUsage(agentSpans.map(({ span, attrs }) => ({ spanId: span.spanId, parentSpanId: span.parentSpanId, attributes: attrs })));
   const { inputTokens, outputTokens } = usage;
-  const countedIds = new Set(usage.counted.map((u) => u.spanId).filter(Boolean));
-  const usageHasTree = usage.counted.length > 0 && countedIds.size > 0;
+  // LLM calls are counted independently of token selection: every model-bearing
+  // span is a call, except a parent dropped as an identified roll-up (its
+  // children are the calls it aggregates).
+  const rolledUpIds = new Set(usage.rolledUp.map((u) => u.spanId).filter(Boolean));
   let llmCalls = 0;
   const toolsUsed = new Set<string>();
   let modelId = 'default';
@@ -545,9 +561,7 @@ export function computeMetricsFromSpans(
   for (const { span, attrs } of agentSpans) {
     const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
-      // An LLM call is a model-bearing span whose usage we counted; without
-      // tree information every model-bearing span counts (legacy behaviour).
-      if (!usageHasTree || countedIds.has(span.spanId)) llmCalls++;
+      if (!(span.spanId && rolledUpIds.has(span.spanId))) llmCalls++;
       modelId = spanModel;
     }
 

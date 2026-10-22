@@ -138,18 +138,17 @@ describe('Metrics Routes', () => {
       expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', { sessionId: undefined, traceId: 'trace-abc', agents: undefined });
     });
 
-    it('should return 503 when observability not configured', async () => {
+    it('serves the file backend too (zero-config traces → metrics), instead of 503', async () => {
       mockGetObservabilityModule.mockReturnValue(moduleOf('file'));
+      mockComputeMetrics.mockResolvedValue({ runId: 'test-run-123', traceId: null, totalTokens: 0, inputTokens: 0, outputTokens: 0, llmCalls: 0, toolCalls: 0, toolsUsed: [], costUsd: 0, durationMs: 0, status: 'pending' as const });
 
       const { req, res } = createMocks({ runId: 'test-run-123' });
       const handler = getRouteHandler(metricsRoutes, 'get', '/api/metrics/:runId');
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith({
-        error: 'Observability data source not configured',
-      });
+      expect(res.status).not.toHaveBeenCalledWith(503);
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.any(Object));
     });
 
     it('should return 500 on service error', async () => {
@@ -403,36 +402,17 @@ describe('Metrics Routes', () => {
       expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1', 'run-2'], { sessionIdByRunId: { 'run-1': 'session-aaa' }, traceIdByRunId: undefined, agentsByRunId: undefined });
     });
 
-    it('should return individual error results when observability not configured', async () => {
+    it('batch: the file backend is served too', async () => {
       mockGetObservabilityModule.mockReturnValue(moduleOf('file'));
-
-      mockComputeAggregateMetrics.mockReturnValue({
-        totalRuns: 0,
-        successRate: 0,
-        totalCostUsd: 0,
-        avgCostUsd: 0,
-        avgDurationMs: 0,
-        p50DurationMs: 0,
-        p95DurationMs: 0,
-        avgTokens: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        avgLlmCalls: 0,
-        avgToolCalls: 0,
-      });
+      mockComputeBatchMetrics.mockResolvedValue([]);
+      mockComputeAggregateMetrics.mockReturnValue({ totalRuns: 0, successRate: 0, totalCostUsd: 0, avgCostUsd: 0, avgDurationMs: 0, p50DurationMs: 0, p95DurationMs: 0, avgTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, avgLlmCalls: 0, avgToolCalls: 0 });
 
       const { req, res } = createMocks({}, { runIds: ['run-1'] });
       const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
 
       await handler(req, res);
 
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-        metrics: [expect.objectContaining({
-          runId: 'run-1',
-          error: 'Observability data source not configured',
-          status: 'error',
-        })],
-      }));
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1'], expect.any(Object));
     });
 
     it('should handle batch failure gracefully', async () => {

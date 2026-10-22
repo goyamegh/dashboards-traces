@@ -30,10 +30,45 @@ describe('tokenUsage — roll-up aware token attribution', () => {
     expect(readInputTokens(undefined)).toBe(0);
   });
 
-  it('selects only usage spans without usage-bearing descendants', () => {
-    const selected = selectUsageSpans(spans);
-    expect(selected.map((s) => s.name).sort()).toEqual(['chat', 'chat', 'chat']);
-    expect(selected.some((s) => s.name.startsWith('invoke_agent'))).toBe(false);
+  it('drops the invoke_agent roll-up (its totals equal Σ chat) and counts the three chat spans', () => {
+    const { counted, rolledUp } = selectUsageSpans(spans);
+    expect(counted.map((s) => s.name).sort()).toEqual(['chat', 'chat', 'chat']);
+    expect(rolledUp.map((s) => s.name)).toEqual(['invoke_agent demo-retrieval-agent']);
+  });
+
+  it('INDEPENDENT nested usage is summed, not deduped (reviewer probe: 100 + 50 → 150, 2 calls)', () => {
+    const tree = [
+      { spanId: 'parent', attributes: { 'gen_ai.usage.input_tokens': 100, 'gen_ai.request.model': 'm' } },
+      { spanId: 'child', parentSpanId: 'parent', attributes: { 'gen_ai.usage.input_tokens': 50, 'gen_ai.request.model': 'm' } },
+    ];
+    const u = sumUsage(tree);
+    expect(u.inputTokens).toBe(150);
+    expect(u.countedSpans).toBe(2);
+    expect(u.rolledUp).toEqual([]);
+    const m = computeMetricsFromSpans('a', tree.map((t) => ({ ...t, attributes: t.attributes })));
+    expect(m.inputTokens).toBe(150);
+    expect(m.llmCalls).toBe(2);
+  });
+
+  it('a parent whose totals exceed its children is a roll-up ONLY when it is an agent-invocation span over LLM calls', () => {
+    const agentParent = [
+      { spanId: 'root', attributes: { 'gen_ai.operation.name': 'invoke_agent', 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 } },
+      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.operation.name': 'chat', 'gen_ai.usage.input_tokens': 300 } }, // other calls never reported
+    ];
+    expect(sumUsage(agentParent)).toMatchObject({ inputTokens: 300, outputTokens: 0, countedSpans: 1 }); // children are the calls; the aggregate is dropped
+    const plainParent = [
+      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 } },
+      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 300 } },
+    ];
+    expect(sumUsage(plainParent)).toMatchObject({ inputTokens: 1300, outputTokens: 100, countedSpans: 2 }); // not identifiable as a roll-up → both count
+  });
+
+  it('a roll-up must match on BOTH dimensions — a larger combined total is not enough', () => {
+    const tree = [
+      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 500, 'gen_ai.usage.output_tokens': 10 } },
+      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 500, 'gen_ai.usage.output_tokens': 50 } },
+    ];
+    expect(sumUsage(tree)).toMatchObject({ inputTokens: 1000, outputTokens: 60, countedSpans: 2 });
   });
 
   it('sums exactly the per-call totals (not 2×) for a roll-up trace', () => {
@@ -49,21 +84,6 @@ describe('tokenUsage — roll-up aware token attribution', () => {
   it('still counts a root that reports usage with no instrumented children', () => {
     const only = [{ spanId: 'r', attributes: { 'gen_ai.usage.input_tokens': 10, 'gen_ai.usage.output_tokens': 2 } }];
     expect(sumUsage(only)).toMatchObject({ inputTokens: 10, outputTokens: 2, countedSpans: 1 });
-  });
-
-  it('counts the parent when its aggregate exceeds what partially-instrumented children report', () => {
-    const tree = [
-      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 } },
-      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 300 } }, // the other calls never reported
-    ];
-    expect(sumUsage(tree)).toMatchObject({ inputTokens: 1000, outputTokens: 100, countedSpans: 1 });
-    // …but a roll-up equal to its children still resolves to the children (per-call truth, 2 LLM calls).
-    const equal = [
-      { spanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 500 } },
-      { spanId: 'c1', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 200 } },
-      { spanId: 'c2', parentSpanId: 'root', attributes: { 'gen_ai.usage.input_tokens': 300 } },
-    ];
-    expect(sumUsage(equal)).toMatchObject({ inputTokens: 500, countedSpans: 2 });
   });
 
   it('treats spans without ids as leaves (flat exports keep legacy behaviour)', () => {

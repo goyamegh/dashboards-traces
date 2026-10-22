@@ -118,6 +118,9 @@ export function spanToMetricsSource(s: Span): MetricsSpanSource {
     durationInNanos: durationMs * 1e6,
     status: { code: s.status === 'ERROR' ? 2 : s.status === 'OK' ? 1 : 0 },
     attributes: s.attributes || {},
+    // Service identity the shared window attribution reads (`serviceName`), from
+    // whichever key the normalized span carries.
+    serviceName: s.attributes?.['serviceName'] ?? s.attributes?.['service.name'] ?? s.attributes?.['gen_ai.agent.name'],
   };
 }
 

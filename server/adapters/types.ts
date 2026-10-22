@@ -261,14 +261,21 @@ export interface IEvaluatorOperations {
  * Logs query operations
  */
 export interface ILogsOperations {
-  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number }>;
+  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number; truncated?: boolean }>;
 }
 
 /**
  * Traces query operations
  */
 export interface ITracesOperations {
-  query(options: TracesQueryOptions): Promise<{ spans: Span[]; total: number; nextCursor?: string | null; hasMore?: boolean }>;
+  query(options: TracesQueryOptions): Promise<{
+    spans: Span[];
+    total: number;
+    nextCursor?: string | null;
+    hasMore?: boolean;
+    /** True when the backend hit a scan/row cap — the result is a lower bound, not the whole trace set. */
+    truncated?: boolean;
+  }>;
   getByTraceId(traceId: string): Promise<Span[]>;
   getByRunIds(runIds: string[]): Promise<Span[]>;
 }
