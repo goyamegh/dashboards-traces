@@ -31,7 +31,7 @@ import type {
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../../types/index.js';
 import { transformSpan, type OpenSearchSpanSource } from '../../services/tracesService.js';
-import { buildChunkLookups, groupAndCompute, failedMetricsResult, isEvalOrJudgeSpan } from '../../services/metricsService.js';
+import { buildChunkLookups, groupAndCompute, failedMetricsResult } from '../../services/metricsService.js';
 import { debug } from '../../../lib/debug.js';
 import { computeUseUnion, matchesQuery, spanMs, toMs } from './traceQueryMatch.js';
 import {
@@ -78,6 +78,16 @@ export const DEFAULT_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const WINDOW_PAD_MS = 5 * 60 * 1000;
 /** How long an id-scan snapshot is reused for offset paging before re-scanning. */
 export const SNAPSHOT_TTL_MS = 60 * 1000;
+/**
+ * The freshness scan: FilterLogEvents over the newest `FRESH_SCAN_MS` of the
+ * window (Logs Insights indexes `aws/spans` with a lag of minutes; anything
+ * older is served by the indexed query), reading at most `FRESH_SCAN_PAGES`
+ * pages (~1 MB each) so a busy account's group cannot turn it into a linear
+ * scan. FilterLogEvents reads oldest-first, which is why the bound is on time
+ * (the newest slice) and not only on pages (which would read the oldest slice).
+ */
+export const FRESH_SCAN_MS = 20 * 60 * 1000;
+export const FRESH_SCAN_PAGES = 10;
 
 /** Result of a raw fetch: the candidate records plus whether every path covered its window. */
 export interface FetchedSources {
@@ -104,15 +114,20 @@ const serviceClause = (name: string): string => `(${SERVICE_FIELDS.map((f) => `$
 
 const msToNanos = (ms: number): string => `${Math.floor(ms)}000000`;
 
+/** Traces request plus the batch-metrics case of several trace ids in one query. */
+export type InsightsTracesOptions = TracesQueryOptions & { traceIds?: string[] };
+
 /**
  * Build the Logs Insights query for a traces request. Exported for tests.
  * Mirrors the DSL in server/services/tracesService.ts clause for clause.
  */
-export function buildTracesInsightsQuery(options: TracesQueryOptions, useUnion: boolean): string {
-  const { traceId, runIds, sessionId, startTime, endTime, serviceName, textSearch, agents } = options;
+export function buildTracesInsightsQuery(options: InsightsTracesOptions, useUnion: boolean): string {
+  const { traceId, traceIds, runIds, sessionId, startTime, endTime, serviceName, textSearch, agents } = options;
   const correlation: string[] = [];
 
-  if (traceId) correlation.push(`traceId = ${q(traceId)}`);
+  const allTraceIds = [...new Set([traceId, ...(traceIds || [])].filter((t): t is string => typeof t === 'string' && t.length > 0))];
+  if (allTraceIds.length === 1) correlation.push(`traceId = ${q(allTraceIds[0])}`);
+  else if (allTraceIds.length > 1) correlation.push(inList('traceId', allTraceIds));
 
   const validRunIds = (runIds || []).filter((id): id is string => typeof id === 'string' && id.length > 0);
   if (validRunIds.length > 0) {
@@ -240,44 +255,58 @@ class CloudWatchTracesOperations implements ITracesOperations {
     return { startMs, endMs, clamped };
   }
 
-  /** Exact-id path: FilterLogEvents term scan. */
-  async fetchExact(ids: string[], scan: { startMs: number; endMs: number }): Promise<FetchedSources> {
+  /** Exact-id path: FilterLogEvents term scan (bounded to `maxPages` when given). */
+  async fetchExact(ids: string[], scan: { startMs: number; endMs: number }, maxPages?: number): Promise<FetchedSources> {
     const pattern = idTermsFilterPattern(ids);
-    if (!pattern) return { sources: [], truncated: false };
-    const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern, startMs: scan.startMs, endMs: scan.endMs, limit: INSIGHTS_ROW_LIMIT });
+    if (!pattern || scan.endMs <= scan.startMs) return { sources: [], truncated: false };
+    const res = await this.reader.filterEvents({ logGroup: this.logGroup, pattern, startMs: scan.startMs, endMs: scan.endMs, limit: INSIGHTS_ROW_LIMIT, maxPages });
     debug('CloudWatchTraces', `FilterLogEvents(${pattern}) → ${res.events.length} records, complete=${res.complete}`);
     return { sources: parseAll(res.events.map((e) => e.message)), truncated: !res.complete };
   }
 
+  /** The newest `FRESH_SCAN_MS` of a scan window — what FilterLogEvents covers; Insights covers the rest. */
+  freshSlice(scan: { startMs: number; endMs: number }): { startMs: number; endMs: number } {
+    return { startMs: Math.max(scan.startMs, scan.endMs - FRESH_SCAN_MS), endMs: scan.endMs };
+  }
+
+  /**
+   * Exact ids over the fresh slice (FilterLogEvents, bounded) IN PARALLEL with
+   * the indexed Logs Insights query over the whole window; the union is
+   * returned. The exact predicate (`matchesQuery`) is applied by the caller,
+   * so fetching the window up front cannot misattribute — and an id hit made
+   * only of Agent Health's eval/judge spans can no longer hide the agent's
+   * Strategy-C window spans, because the window is always read. Partial only
+   * when Insights hit its row limit or the window was clamped: the bounded
+   * scan stopping early is covered by Insights (minus its ingestion lag).
+   */
+  async fetchBoth(exactIds: string[], insightsOptions: InsightsTracesOptions, useUnion: boolean, scan: { startMs: number; endMs: number; clamped: boolean }): Promise<FetchedSources> {
+    const [exact, win] = await Promise.all([
+      this.fetchExact(exactIds, this.freshSlice(scan), FRESH_SCAN_PAGES),
+      this.fetchWindow(insightsOptions, useUnion, scan),
+    ]);
+    const seen = new Set<string>();
+    const sources = [...exact.sources, ...win.sources].filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
+    return { sources, truncated: win.truncated || scan.clamped };
+  }
+
   /** Window / free-text path: Logs Insights. */
-  async fetchWindow(options: TracesQueryOptions, useUnion: boolean, scan: { startMs: number; endMs: number }): Promise<FetchedSources> {
+  async fetchWindow(options: InsightsTracesOptions, useUnion: boolean, scan: { startMs: number; endMs: number }): Promise<FetchedSources> {
     const res = await this.reader.insights({ logGroups: [this.logGroup], query: buildTracesInsightsQuery(options, useUnion), startMs: scan.startMs, endMs: scan.endMs });
     debug('CloudWatchTraces', `Insights → ${res.rows.length} records, truncated=${res.truncated}`);
     return { sources: parseAll(res.rows.map((r) => r['@message']).filter((m): m is string => typeof m === 'string')), truncated: res.truncated };
   }
 
   /**
-   * Fetch raw span sources for ONE request (the traces route).
-   *
-   * Exact ids (traceId / runIds / sessionIds) go through FilterLogEvents —
-   * synchronous and visible within seconds of ingestion, whereas Logs
-   * Insights indexes `aws/spans` with a lag of minutes. The Insights window
-   * query runs when the request needs it (agents window / free text) and the
-   * exact ids did not already find the AGENT's spans: Agent Health's own
-   * eval/judge spans carry the run id too, so a hit consisting only of those
-   * must not suppress the fallback (that is the Strategy-C-only agent).
+   * Fetch raw span sources for ONE request (the traces route): the fresh
+   * FilterLogEvents slice for the exact ids (traceId / runIds / sessionIds —
+   * visible within seconds of ingestion) in parallel with the Insights query
+   * for the full request (indexed; the only path for the agents window and
+   * free text) — see `fetchBoth`. On a small account both answer instantly; on
+   * a production account with a multi-GB `aws/spans` this keeps a trace lookup
+   * at Insights latency (seconds) instead of a linear scan (tens of seconds).
    */
   async fetchSources(options: TracesQueryOptions, useUnion: boolean): Promise<FetchedSources> {
-    const { agents, textSearch } = options;
-    const scan = this.window(options);
-    const exact = await this.fetchExact(exactCorrelatorIds(options), scan);
-    const needsWindow = !!(agents && agents.length > 0) || !!(textSearch && textSearch.trim());
-    const agentSpanFound = exact.sources.some((src) => !isEvalOrJudgeSpan(src.attributes || {}, src.name));
-    const noExact = exactCorrelatorIds(options).length === 0;
-    const windowNeeded = noExact || (needsWindow && (!useUnion || !agentSpanFound)) || exact.truncated;
-    if (!windowNeeded) return { sources: exact.sources, truncated: exact.truncated || scan.clamped };
-    const win = await this.fetchWindow(options, useUnion, scan);
-    return { sources: [...exact.sources, ...win.sources], truncated: exact.truncated || win.truncated || scan.clamped };
+    return this.fetchBoth(exactCorrelatorIds(options), options, useUnion, this.window(options));
   }
 
   async query(options: TracesQueryOptions) {
@@ -452,12 +481,13 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
   }
 
   /**
-   * Per 50-key chunk: exact ids (run ids, session ids, trace ids) through
-   * FilterLogEvents over the lookback; then the Insights window ONLY for keys
-   * whose window hints did not get an AGENT span from the exact phase (eval /
-   * judge spans do not count — they carry the run id themselves). A store
-   * failure yields `status: 'error'` for the chunk, never "no spans".
-   * Attribution + math are the shared `groupAndCompute`.
+   * Per 50-key chunk: ONE pass of `fetchBoth` — the exact ids (run ids,
+   * session ids, trace ids) over the fresh slice plus one Insights query
+   * carrying the same ids and every window hint, in parallel. Attribution is
+   * still precise-first per key inside `groupAndCompute` (window spans are
+   * used only for keys whose ids found no agent span), so reading the windows
+   * up front costs one indexed query and cannot misattribute. A store failure
+   * yields `status: 'error'` for the chunk, never "no spans".
    */
   async forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]> {
     const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
@@ -469,39 +499,18 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
       const lookups = buildChunkLookups(chunk, hints?.sessionIdByRunId, hints?.traceIdByRunId, hints?.agentsByRunId);
       try {
         const exactIds = [...lookups.runIdCorrelators, ...lookups.sessionIdToRunId.keys(), ...lookups.traceIdToRunId.keys()];
-        // Mixed chunk: keys' runs happened at different times → full lookback for the id scan.
-        const idScan = this.traces.window({}, false);
-        const exact = await this.traces.fetchExact(exactIds, idScan);
-        let sources = exact.sources;
-        let truncated = exact.truncated || idScan.clamped;
+        const allHints = [...lookups.hintsByServiceName.values()].flat().map((h) => h.hint);
+        // Mixed chunk: keys' runs happened at different times → the ids need the
+        // full lookback; the hints' windows are inside it.
+        const scan = this.traces.window({}, false);
+        const { sources, truncated } = await this.traces.fetchBoth(
+          exactIds,
+          { runIds: lookups.runIdCorrelators, traceIds: [...lookups.traceIdToRunId.keys()], agents: allHints.length ? allHints : undefined },
+          true,
+          scan
+        );
 
-        // Which keys already have agent spans by exact id?
-        const idSet = new Set(lookups.runIdCorrelators);
-        const found = new Set<string>();
-        for (const src of exact.sources) {
-          const a = src.attributes || {};
-          if (isEvalOrJudgeSpan(a, src.name)) continue;
-          const key =
-            ([a['agent_health.run.id'], a['gen_ai.conversation.id']].find((v) => typeof v === 'string' && idSet.has(v)) as string | undefined) ??
-            (typeof a['session.id'] === 'string' ? lookups.sessionIdToRunId.get(a['session.id'] as string) : undefined) ??
-            (src.traceId ? lookups.traceIdToRunId.get(src.traceId) : undefined);
-          if (key) found.add(key);
-        }
-        // Window hints of keys the exact phase did not find an agent span for.
-        const pendingHints: TracesQueryOptions['agents'] = [];
-        for (const list of lookups.hintsByServiceName.values()) {
-          for (const { key, hint } of list) if (!found.has(key)) pendingHints.push(hint);
-        }
-        if (pendingHints.length > 0) {
-          const winScan = this.traces.window({ agents: pendingHints });
-          const win = await this.traces.fetchWindow({ agents: pendingHints }, true, winScan);
-          sources = [...sources, ...win.sources];
-          truncated = truncated || win.truncated || winScan.clamped;
-        }
-
-        const seen = new Set<string>();
-        const unique = sources.filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
-        unique.sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
+        const unique = [...sources].sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
         results.push(...groupAndCompute(chunk, unique, lookups, truncated));
       } catch (e: any) {
         const c = classifyCloudWatchError(e);

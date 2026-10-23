@@ -35,6 +35,16 @@ const groups: Record<string, string[]> = {
 let authFailure: Error | null = null;
 /** When set, FilterLogEvents answers with a leftover nextToken (capped scan). */
 let capScan = false;
+/** Insights ingestion lag emulated by the fake (0 = fully indexed). */
+let insightsLagMs = 0;
+function recordMs(message: string): number | undefined {
+  try {
+    const n = JSON.parse(message)?.startTimeUnixNano;
+    return n === undefined ? undefined : Math.floor(Number(n) / 1e6);
+  } catch {
+    return undefined;
+  }
+}
 
 function fakeSend(command: any): any {
   sent.push(command);
@@ -51,7 +61,8 @@ function fakeSend(command: any): any {
     const terms = !m && input.filterPattern ? [...(input.filterPattern as string).matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => JSON.parse(`"${x[1]}"`)) : [];
     const events = msgs
       .filter((s) => (m ? JSON.parse(s).traceId === m[1] : terms.length ? terms.some((t: string) => s.includes(t)) : true))
-      .map((s) => ({ message: s, timestamp: 1788467284282, logStreamName: 'default' }));
+      .filter((s) => { const t = recordMs(s); return t === undefined || (t >= input.startTime && t <= input.endTime); }) // CloudWatch honours the bounds
+      .map((s) => ({ message: s, timestamp: recordMs(s) ?? 1788467284282, logStreamName: 'default' }));
     // A capped scan: CloudWatch keeps handing back a nextToken (the reader stops at its page budget).
     return capScan ? { events: input.nextToken ? [] : events, nextToken: 'more' } : { events };
   }
@@ -60,7 +71,10 @@ function fakeSend(command: any): any {
   }
   if (command instanceof GetQueryResultsCommand) {
     const g = (input.queryId as string).replace(/^q-/, '');
-    return { status: 'Complete', results: (groups[g] || []).map((m) => [{ field: '@message', value: m }]) };
+    // Insights lags ingestion: records newer than the lag are not indexed yet.
+    const cutoff = Date.now() - insightsLagMs;
+    const results = (groups[g] || []).filter((m) => (recordMs(m) ?? 0) <= cutoff).map((m) => [{ field: '@message', value: m }]);
+    return { status: 'Complete', results, statistics: { recordsMatched: results.length } };
   }
   throw new Error(`unexpected command ${command.constructor.name}`);
 }
@@ -118,10 +132,12 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     sent.length = 0;
     authFailure = null;
     capScan = false;
+    insightsLagMs = 0;
+    groups['aws/spans'] = (spanFixture as any[]).map((r) => JSON.stringify(r));
     __resetObservabilityCachesForTests();
   });
 
-  it('POST /api/traces by traceId returns the normalized tree via FilterLogEvents', async () => {
+  it('POST /api/traces by traceId returns the normalized tree (fresh FilterLogEvents slice ∥ indexed Insights)', async () => {
     const res = await request(app).post('/api/traces').send({ traceId: TRACE, size: 100 });
     expect(res.status).toBe(200);
     expect(res.body.backend).toBe('cloudwatch');
@@ -133,10 +149,26 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(root.attributes['agent_health.run.id']).toBe(RUN);
     const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
     expect(filter.input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `"${TRACE}"` });
-    expect(sent.some((c) => c instanceof StartQueryCommand)).toBe(false);
+    expect(filter.input.endTime - filter.input.startTime).toBe(20 * 60 * 1000); // the fresh slice, not the 7-day lookback
+    const start = sent.find((c) => c instanceof StartQueryCommand);
+    expect(start.input.queryString).toContain(`traceId = "${TRACE}"`);
+    expect(start.input.endTime - start.input.startTime).toBeGreaterThanOrEqual(7 * 86_400); // seconds (floor/ceil); the lookback
+    expect(start.input.endTime - start.input.startTime).toBeLessThanOrEqual(7 * 86_400 + 1);
   });
 
-  it('POST /api/traces in the run-report shape (traceId + runIds + agents) resolves on exact ids without Insights', async () => {
+  it('POST /api/traces returns a span ingested seconds ago even though Insights has not indexed it yet', async () => {
+    insightsLagMs = 5 * 60 * 1000;
+    const nowNanos = `${Date.now() - 2000}000000`;
+    const fresh = { ...(spanFixture as any[])[0], traceId: 'c'.repeat(32), spanId: 'c0ffee0000000001', parentSpanId: undefined, startTimeUnixNano: nowNanos, endTimeUnixNano: nowNanos };
+    groups['aws/spans'] = [...groups['aws/spans'], JSON.stringify(fresh)];
+    const res = await request(app).post('/api/traces').send({ traceId: 'c'.repeat(32) });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.spans[0].spanId).toBe('c0ffee0000000001');
+    expect(res.body.warning).toBeUndefined();
+  });
+
+  it('POST /api/traces in the run-report shape (traceId + runIds + agents) issues one term scan and one Insights query', async () => {
     const res = await request(app).post('/api/traces').send({
       traceId: 'f'.repeat(32),
       runIds: [RUN],
@@ -147,7 +179,7 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(res.body.total).toBe(12);
     const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
     expect(filter.input.filterPattern).toBe(`?"${'f'.repeat(32)}" ?"${RUN}"`);
-    expect(sent.some((c) => c instanceof StartQueryCommand)).toBe(false);
+    expect(sent.filter((c) => c instanceof StartQueryCommand)).toHaveLength(1);
   });
 
   it('POST /api/traces with only a service window (Strategy C) goes through Logs Insights', async () => {
@@ -233,14 +265,15 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     }
   });
 
-  it('a capped scan is surfaced as a partial-results warning on /api/traces and partial metrics', async () => {
+  it('a bounded term scan stopping early is not partial — Insights covers the window — and the result is complete', async () => {
     capScan = true;
     const traces = await request(app).post('/api/traces').send({ traceId: TRACE });
     expect(traces.status).toBe(200);
     expect(traces.body.total).toBe(12);
-    expect(traces.body.warning).toMatch(/partial/i);
+    expect(traces.body.warning).toBeUndefined();
     const metrics = await request(app).get(`/api/metrics/${RUN}`);
-    expect(metrics.body).toMatchObject({ runId: RUN, inputTokens: 42952, partial: true });
+    expect(metrics.body).toMatchObject({ runId: RUN, inputTokens: 42952 });
+    expect(metrics.body.partial).toBeUndefined();
   });
 
   it('a 60-day /api/traces range is answered from the newest 30 days WITH a partial warning (documented bound)', async () => {
@@ -249,8 +282,8 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(12);
     expect(res.body.warning).toMatch(/partial.*time-window/i);
-    const scan = sent.find((c) => c instanceof FilterLogEventsCommand).input;
-    expect(scan.endTime - scan.startTime).toBeLessThanOrEqual(30 * 86_400_000 + 1);
+    const scan = sent.find((c) => c instanceof StartQueryCommand).input;
+    expect(scan.endTime - scan.startTime).toBeLessThanOrEqual(30 * 86_400 + 1); // Insights takes seconds
   });
 
   it('a trace-store failure on /api/metrics is status error (unknown), not "no spans" (reviewer probe)', async () => {
