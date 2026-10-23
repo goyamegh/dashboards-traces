@@ -44,17 +44,37 @@ export interface CloudWatchSpanRecord {
   [key: string]: unknown;
 }
 
+/**
+ * Two record shapes are read: the OTel log-record export (camelCase
+ * `traceId`/`spanId`/`severityText`/`timeUnixNano`) and the common
+ * application-logger JSON (`trace_id`/`span_id`/`severity`|`level`,
+ * ISO `timestamp`, `message`|`body`, `service`).
+ */
 export interface CloudWatchLogRecord {
   traceId?: string;
+  trace_id?: string;
   spanId?: string;
+  span_id?: string;
   severityText?: string;
+  severity?: string;
+  level?: string;
   severityNumber?: number;
   body?: unknown;
+  message?: unknown;
   timeUnixNano?: number | string;
   observedTimeUnixNano?: number | string;
+  timestamp?: string | number;
+  service?: string;
+  logger?: string;
   attributes?: Record<string, unknown>;
   resource?: { attributes?: Record<string, unknown> };
   [key: string]: unknown;
+}
+
+/** Trace id of a log record in either shape. */
+export function logRecordTraceId(rec: CloudWatchLogRecord): string | undefined {
+  const v = rec.traceId ?? rec.trace_id;
+  return typeof v === 'string' ? v : undefined;
 }
 
 /**
@@ -153,16 +173,27 @@ export function cloudWatchLogToEntry(
   }
 
   const resourceAttrs = rec.resource?.attributes || {};
-  const body = rec.body === undefined ? message : typeof rec.body === 'string' ? rec.body : JSON.stringify(rec.body);
+  const bodyField = rec.body !== undefined ? rec.body : rec.message;
+  const body = bodyField === undefined ? message : typeof bodyField === 'string' ? bodyField : JSON.stringify(bodyField);
+  const tsFromField = (() => {
+    if (typeof rec.timestamp === 'number') return new Date(rec.timestamp).toISOString();
+    if (typeof rec.timestamp === 'string') {
+      // log4j-style "2026-10-23T02:07:19,042" uses a comma before the millis
+      const parsed = Date.parse(rec.timestamp.replace(/,(\d{3})/, '.$1'));
+      return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+    }
+    return undefined;
+  })();
   return {
-    timestamp: nanosToIso(rec.timeUnixNano) || nanosToIso(rec.observedTimeUnixNano) || fallbackTs,
+    timestamp: nanosToIso(rec.timeUnixNano) || nanosToIso(rec.observedTimeUnixNano) || tsFromField || fallbackTs,
     index: logGroup,
     message: body,
-    level: (rec.severityText || 'info').toString().toLowerCase(),
-    source: (resourceAttrs['service.name'] as string | undefined) || logGroup,
-    traceId: rec.traceId,
-    spanId: rec.spanId,
+    level: (rec.severityText || rec.severity || rec.level || 'info').toString().toLowerCase(),
+    source: (resourceAttrs['service.name'] as string | undefined) || rec.service || logGroup,
+    traceId: logRecordTraceId(rec),
+    spanId: typeof (rec.spanId ?? rec.span_id) === 'string' ? ((rec.spanId ?? rec.span_id) as string) : undefined,
     severityNumber: rec.severityNumber,
+    logger: rec.logger,
     attributes: rec.attributes,
     resource: rec.resource,
   };

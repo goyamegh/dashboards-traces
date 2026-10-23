@@ -48,6 +48,9 @@ import {
   resolveLogGroupTemplate,
 } from './cloudwatch/recordMappers.js';
 
+/** Id lookups in application log groups scan at most this far back by default (they are large). */
+export const DEFAULT_LOGS_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
 export interface CloudWatchLogGroups {
   traces: string;
   logs: string;
@@ -59,6 +62,8 @@ export interface CloudWatchModuleOptions {
   logGroups?: Partial<CloudWatchLogGroups>;
   /** Scan window for id-only requests that carry no run window (default 7 days). */
   lookbackMs?: number;
+  /** Scan window for id lookups in application log groups (default 24 hours). */
+  logsLookbackMs?: number;
   /** Hard cap on any scan window, explicit or derived (default 30 days). */
   maxWindowMs?: number;
 }
@@ -344,8 +349,25 @@ class CloudWatchLogsOperations implements ILogsOperations {
     private readonly reader: ICloudWatchReader,
     private readonly template: string,
     private readonly lookbackMs: number,
-    private readonly maxWindowMs: number
+    private readonly maxWindowMs: number,
+    /** Used to derive a trace's time window so a trace-id log lookup scans minutes, not the whole lookback. */
+    private readonly traces?: ITracesOperations
   ) {}
+
+  /** [first span start − 5 min, last span end + 5 min] for a trace, or null when the trace is not in this source. */
+  private async windowForTrace(traceId: string): Promise<{ startMs: number; endMs: number } | null> {
+    if (!this.traces) return null;
+    try {
+      const spans = await this.traces.getByTraceId(traceId);
+      if (spans.length === 0) return null;
+      const starts = spans.map((s) => Date.parse(s.startTime)).filter(Number.isFinite);
+      const ends = spans.map((s) => Date.parse(s.endTime || s.startTime)).filter(Number.isFinite);
+      if (!starts.length) return null;
+      return { startMs: Math.min(...starts) - WINDOW_PAD_MS, endMs: Math.max(...ends) + WINDOW_PAD_MS };
+    } catch {
+      return null;
+    }
+  }
 
   /** Log groups to search: the template resolved for the service, else the groups under the template prefix (bounded by the reader). */
   async resolveGroups(serviceName?: string): Promise<{ groups: string[]; truncated: boolean }> {
@@ -363,15 +385,23 @@ class CloudWatchLogsOperations implements ILogsOperations {
     if (groups.length === 0) return { logs: [], total: 0, truncated: groupsTruncated };
 
     const now = Date.now();
-    const endMs = endTime ?? now;
-    // Id lookups search the lookback; browsing defaults to the last hour.
+    let endMs = endTime ?? now;
+    // Id lookups search the lookback; browsing defaults to the last hour. A
+    // trace-id lookup without bounds first asks the trace for its own window
+    // (application log groups are large; a full-lookback scan takes a minute).
     let startMs = startTime ?? (traceId || runId ? endMs - this.lookbackMs : endMs - 60 * 60 * 1000);
+    if (traceId && startTime === undefined && endTime === undefined) {
+      const w = await this.windowForTrace(traceId);
+      if (w) { startMs = w.startMs; endMs = Math.min(now, w.endMs); }
+    }
     const clamped = endMs - startMs > this.maxWindowMs;
     if (clamped) startMs = endMs - this.maxWindowMs;
 
+    // Quoted-term patterns match the id wherever it sits in the record (OTel
+    // `traceId` or application-logger `trace_id`); exactness is enforced below.
     let pattern = '';
-    if (traceId) pattern = traceIdFilterPattern(traceId);
-    else if (runId) pattern = JSON.stringify(runId); // quoted term match anywhere in the event
+    if (traceId) pattern = idTermsFilterPattern([traceId]) ?? '';
+    else if (runId) pattern = JSON.stringify(runId);
     else if (query) pattern = JSON.stringify(query);
 
     // FilterLogEvents returns oldest-first; the newest `size` matches are what
@@ -394,6 +424,7 @@ class CloudWatchLogsOperations implements ILogsOperations {
     );
 
     let logs = perGroup.flat();
+    if (traceId) logs = logs.filter((l) => !l.traceId || l.traceId === traceId); // plain-text lines (no id field) are kept: the term matched
     if (query && (traceId || runId)) {
       const needle = query.toLowerCase();
       logs = logs.filter((l) => l.message.toLowerCase().includes(needle));
@@ -503,7 +534,7 @@ export class CloudWatchObservabilityModule implements IObservabilityModule {
     this.reader = reader ?? new CloudWatchReader({ region: options.region, profile: options.profile });
     const traces = new CloudWatchTracesOperations(this.reader, this.logGroups.traces, lookbackMs, maxWindowMs);
     this.traces = traces;
-    this.logs = new CloudWatchLogsOperations(this.reader, this.logGroups.logs, lookbackMs, maxWindowMs);
+    this.logs = new CloudWatchLogsOperations(this.reader, this.logGroups.logs, options.logsLookbackMs ?? DEFAULT_LOGS_LOOKBACK_MS, maxWindowMs, traces);
     this.metrics = new CloudWatchMetricsOperations(traces);
   }
 

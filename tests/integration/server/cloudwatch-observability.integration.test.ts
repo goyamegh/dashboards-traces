@@ -174,8 +174,8 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ total: 3, backend: 'cloudwatch' });
     expect(res.body.logs.map((l: any) => l.spanId).sort()).toEqual(['aaad0bc29275b362', 'aaad0bc29275b362', 'b93daa8692261d13']);
-    const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
-    expect(filter.input.logGroupName).toBe(`/agent-health/${SERVICE}`);
+    const filter = sent.find((c) => c instanceof FilterLogEventsCommand && c.input.logGroupName !== 'aws/spans');
+    expect(filter.input).toMatchObject({ logGroupName: `/agent-health/${SERVICE}`, filterPattern: `"${TRACE}"` });
   });
 
   it('POST /api/logs without a service discovers groups under the template prefix', async () => {
