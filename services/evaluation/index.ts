@@ -9,6 +9,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { context as otelContext, propagation } from '@opentelemetry/api';
 import { AgentConfig, EvaluationReport, TestCase, TrajectoryStep, OpenSearchLog, LLMJudgeResponse, ConnectorProtocol, BeforeRequestContext, AfterResponseContext, TestCasePerformanceMetrics } from '@/types';
 import { executeBeforeRequestHook, executeAfterResponseHook } from '@/lib/hooks';
 import { AGUIToTrajectoryConverter, consumeSSEStream, buildAgentPayload } from '@/services/agent';
@@ -31,6 +32,9 @@ import { DEFAULT_CONFIG } from '@/lib/constants';
 
 // For browser/Vite builds, use DEFAULT_CONFIG directly.
 // For server/CLI (Node.js), we can use loadConfigSync from lib/config/index.
+/** W3C baggage key carrying Agent Health's per-invocation run id to the agent. */
+export const BAGGAGE_KEY_AGENT_HEALTH_RUN_ID = 'agent_health.run.id';
+
 // This is a runtime check to avoid importing Node.js modules in browser builds.
 const getModels = () => {
   // Check if we're in a Node.js environment with file system access
@@ -356,6 +360,15 @@ export interface InvokeAgentOptions {
   /** Raw event callback (debugging). */
   onRawEvent?: (event: any) => void;
   /**
+   * Agent Health's own id for this invocation, sent to the agent as the W3C
+   * baggage entry `agent_health.run.id` (Strategy B over the wire). Callers
+   * pass the id they will persist for the report (its pre-allocated report id)
+   * so spans an agent stamps from baggage correlate back to that report —
+   * the same surrogate key the metrics batch path already uses. When omitted
+   * a one-off id is minted (still useful for log correlation, not persisted).
+   */
+  correlationId?: string;
+  /**
    * Per-invocation environment variables forwarded to the connector. Merged
    * into `connectorConfig.env` so subprocess connectors inherit them on the
    * spawned child (the lowest common denominator every subprocess connector
@@ -380,7 +393,7 @@ export async function invokeAgent(
   testCase: TestCase,
   options: InvokeAgentOptions
 ): Promise<InvokeAgentResult> {
-  const { registry: connectorRegistry, onStep, onRawEvent, env: runEnv } = options;
+  const { registry: connectorRegistry, onStep, onRawEvent, env: runEnv, correlationId } = options;
 
   // Get connector for this agent
   const agentWithConnector = agent as AgentConfigWithConnector;
@@ -435,14 +448,33 @@ export async function invokeAgent(
     }
   }
 
+  // Agent Health's own correlation id for this invocation (Strategy B, see
+  // AGENTS.md → Trace correlation). Known BEFORE the call so it can travel to
+  // the agent as W3C baggage (`agent_health.run.id=<id>`, injected next to
+  // `traceparent` by the connector's propagation.inject); an agent that reads
+  // baggage stamps it on every span, so its spans correlate even when the
+  // trace id is lost. It never replaces the agent's own returned `runId` —
+  // a REST agent that echoes nothing still reports no run id, exactly as before.
+  // Merged into whatever baggage is already on the context (a caller's own
+  // entries survive; only this key is set).
+  const agentHealthRunId = correlationId ?? request.runId ?? `ah-${uuidv4()}`;
+  const activeCtx = otelContext.active();
+  const existing = propagation.getBaggage(activeCtx) ?? propagation.createBaggage();
+  const baggageCtx = propagation.setBaggage(
+    activeCtx,
+    existing.setEntry(BAGGAGE_KEY_AGENT_HEALTH_RUN_ID, { value: agentHealthRunId })
+  );
+
   // Execute via connector (with timing)
   const agentStartTime = Date.now();
-  let result = await connector.execute(
-    effectiveEndpoint,
-    request,
-    auth,
-    onStep,
-    onRawEvent
+  let result = await otelContext.with(baggageCtx, () =>
+    connector.execute(
+      effectiveEndpoint,
+      request,
+      auth,
+      onStep,
+      onRawEvent
+    )
   );
   const agentDurationMs = Date.now() - agentStartTime;
 
@@ -524,6 +556,7 @@ export async function runEvaluationWithConnector(
       registry: connectorRegistry,
       onStep,
       onRawEvent,
+      correlationId: reportId,
     });
     const connector = invocation.connector;
     const agentDurationMs = invocation.agentDurationMs;

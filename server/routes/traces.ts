@@ -72,8 +72,8 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     let suggestion: string | undefined;
     let nextCursor: string | null = null;
     let hasMore: boolean = false;
-    const backend: 'opensearch' | 'file' = resolveObservabilityConfig(req) ? 'opensearch' : 'file';
     const obs = getObservabilityModule(req);
+    const backend = obs.describe().type;
 
     if (traceId || (runIds && runIds.length > 0) || sessionId || startTime || endTime || (agents && agents.length > 0)) {
       try {
@@ -84,6 +84,17 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         realSpans = (result.spans || []) as Span[];
         nextCursor = result.nextCursor || null;
         hasMore = result.hasMore || false;
+        if (result.truncated) {
+          // Never present a capped scan as the whole picture.
+          warning = `Results are partial: the ${backend} query hit a scan, row or time-window limit; narrow the time range or filters to see everything.`;
+          warningCategory = 'unknown';
+        }
+        if (result.warnings && result.warnings.length > 0) {
+          // Composite backend: name the source(s) that failed; the others answered.
+          const failed = result.warnings.map((w) => `${w.source}: ${w.message}`).join('; ');
+          warning = `${warning ? warning + ' ' : ''}Some sources could not be read — ${failed}`;
+          warningCategory = warningCategory ?? 'unknown';
+        }
       } catch (e: any) {
         const classified = classifyOpenSearchError(e);
         console.warn(`[TracesAPI] ${backend} query failed (${classified.category}):`, classified.message);
@@ -152,8 +163,8 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
       });
     }
 
-    // Proactive credential check for SigV4 auth
-    if (config.authType === 'sigv4') {
+    // Proactive credential check for AWS-authenticated backends (SigV4 OpenSearch, CloudWatch)
+    if (config.authType === 'sigv4' || config.type === 'cloudwatch') {
       const credError = await validateAwsCredentials(config.awsProfile);
       if (credError) {
         return res.json({
@@ -167,7 +178,7 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
 
     const obs = getObservabilityModule(req);
     const result = await obs.health();
-    res.json({ ...result, backend: 'opensearch' });
+    res.json({ ...result, backend: obs.describe().type });
   } catch (error: any) {
     res.json({ status: 'error', error: error.message });
   }

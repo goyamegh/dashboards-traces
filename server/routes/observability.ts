@@ -12,7 +12,9 @@
 
 import { Router, Request, Response } from 'express';
 import { testObservabilityConnection, checkObservabilityHealth } from '../adapters/index.js';
-import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { resolveObservabilityConfig, resolveObservabilitySources, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createObservabilityModule } from '../services/observabilityClient.js';
+import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../types/index.js';
 import { getObservabilityConfigFromFile, getObservabilityConfigFromTs } from '../services/configService.js';
 
 const router = Router();
@@ -34,6 +36,29 @@ router.get('/api/observability/health', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[ObservabilityAPI] Health check failed:', error.message);
     res.json({ status: 'error', error: error.message });
+  }
+});
+
+/**
+ * GET /api/observability/sources/health — one health entry per configured
+ * source (primary first), for the Settings card.
+ */
+router.get('/api/observability/sources/health', async (req: Request, res: Response) => {
+  try {
+    const sources = resolveObservabilitySources(req);
+    const results = await Promise.all(
+      sources.map(async (src) => {
+        try {
+          const health = await createObservabilityModule(src).health();
+          return { id: src.id, name: src.name, type: src.type ?? 'opensearch', health };
+        } catch (e: any) {
+          return { id: src.id, name: src.name, type: src.type ?? 'opensearch', health: { status: 'error', error: e.message } };
+        }
+      })
+    );
+    res.json({ sources: results });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -67,7 +92,25 @@ function normalizeEndpoint(value: string | undefined | null): string | undefined
  */
 router.post('/api/observability/test-connection', async (req: Request, res: Response) => {
   try {
-    const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
+    const { type, endpoint, username, password, tlsSkipVerify, indexes, logGroups, authType, awsProfile, awsRegion, awsService } = req.body;
+
+    if (type === 'cloudwatch') {
+      // CloudWatch carries no secrets in the request (credentials come from the
+      // AWS profile / default chain), so no stored-credential fallback applies.
+      if (!awsRegion || typeof awsRegion !== 'string') {
+        return res.status(400).json({ status: 'error', message: 'awsRegion is required for CloudWatch' });
+      }
+      const result = await testObservabilityConnection({
+        type: 'cloudwatch',
+        awsRegion,
+        awsProfile: typeof awsProfile === 'string' && awsProfile ? awsProfile : undefined,
+        logGroups: {
+          traces: logGroups?.traces || DEFAULT_CLOUDWATCH_LOG_GROUPS.traces,
+          logs: logGroups?.logs || DEFAULT_CLOUDWATCH_LOG_GROUPS.logs,
+        },
+      });
+      return res.json(result);
+    }
 
     if (!endpoint) {
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
@@ -122,6 +165,7 @@ router.post('/api/observability/test-connection', async (req: Request, res: Resp
 router.get('/api/observability/defaults', (_req: Request, res: Response) => {
   res.json({
     indexes: DEFAULT_OTEL_INDEXES,
+    logGroups: DEFAULT_CLOUDWATCH_LOG_GROUPS,
   });
 });
 

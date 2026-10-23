@@ -478,33 +478,43 @@ test.describe('Observability Data Source Section', () => {
     await expect(page.locator('text=Observability Data Source')).toBeVisible();
   });
 
-  test('should show Advanced Index Patterns toggle', async ({ page }) => {
-    const advancedToggle = page.locator('text=Advanced: Index Patterns');
-    await expect(advancedToggle).toBeVisible();
+  // The card renders every source as a `Type → fields` form (no collapsed
+  // "Advanced" toggle any more): an OpenSearch source shows its index
+  // patterns inline, a CloudWatch source shows region / profile / log groups.
+  test('primary OpenSearch source shows the index-pattern fields inline', async ({ page }) => {
+    const primary = page.getByTestId('observability-source-primary');
+    await expect(primary.getByTestId('obs-primary-opensearch-fields')).toBeVisible();
+    await expect(primary.locator('label:has-text("Traces index")')).toBeVisible();
+    await expect(primary.locator('label:has-text("Logs index")')).toBeVisible();
+    await expect(primary.locator('label:has-text("Metrics index")')).toBeVisible();
+    await expect(primary.locator('#obs-primary-traces-index')).toHaveAttribute('placeholder', 'otel-v1-apm-span-*');
+    await expect(primary.getByTestId('obs-primary-cloudwatch-fields')).toHaveCount(0);
   });
 
-  test('should expand Advanced Index Patterns on click', async ({ page }) => {
-    const advancedToggle = page.locator('text=Advanced: Index Patterns');
-    await advancedToggle.click();
-    await page.waitForTimeout(500);
+  test('switching Type swaps the fields and keeps what was typed', async ({ page }) => {
+    const primary = page.getByTestId('observability-source-primary');
+    await primary.locator('#obs-primary-traces-index').fill('my-spans-*');
 
-    // Index fields should be visible
-    await expect(page.locator('label:has-text("Traces Index")').first()).toBeVisible();
-    await expect(page.locator('label:has-text("Logs Index")').first()).toBeVisible();
-    await expect(page.locator('label:has-text("Metrics Index")').first()).toBeVisible();
+    await primary.getByTestId('obs-primary-type').click();
+    await page.getByRole('option', { name: 'Amazon CloudWatch' }).click();
+    await expect(primary.getByTestId('obs-primary-cloudwatch-fields')).toBeVisible();
+    await expect(primary.locator('label:has-text("Traces index")')).toHaveCount(0);
+    await expect(primary.locator('#obs-primary-region')).toHaveAttribute('placeholder', 'us-east-1');
+    await expect(primary.locator('#obs-primary-traces-group')).toHaveAttribute('placeholder', 'aws/spans');
+
+    await primary.getByTestId('obs-primary-type').click();
+    await page.getByRole('option', { name: 'OpenSearch', exact: true }).click();
+    await expect(primary.locator('#obs-primary-traces-index')).toHaveValue('my-spans-*');
   });
 
-  test('should show security warning when credentials entered', async ({ page }) => {
-    // Find and fill the observability username input
-    const usernameInput = page.locator('input#obs-username');
-    await usernameInput.fill('testuser');
-    await page.waitForTimeout(500);
+  test('credentials are server-side: masked password field and no browser-storage warning', async ({ page }) => {
+    const primary = page.getByTestId('observability-source-primary');
+    await primary.locator('#obs-primary-username').fill('testuser');
+    await expect(primary.locator('#obs-primary-username')).toHaveValue('testuser');
+    await expect(primary.locator('#obs-primary-password')).toHaveAttribute('type', 'password');
 
-    // Warning about localStorage should appear
-    const warning = page.locator('text=Credentials stored in browser localStorage');
-    if (await warning.isVisible().catch(() => false)) {
-      await expect(warning).toBeVisible();
-    }
+    await expect(page.locator('text=never in your browser')).toBeVisible();
+    await expect(page.locator('text=Credentials stored in browser localStorage')).toHaveCount(0);
   });
 });
 

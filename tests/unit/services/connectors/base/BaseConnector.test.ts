@@ -368,5 +368,34 @@ describe('BaseConnector', () => {
         expect(headers.traceparent).toBeUndefined();
       });
     });
+
+    it('MERGES every case variant of a user baggage header into ONE canonical header (ours wins on a key collision)', () => {
+      const { W3CBaggagePropagator, CompositePropagator } = require('@opentelemetry/core');
+      // The OTel API allows ONE global registration; swap it explicitly.
+      propagation.disable();
+      propagation.setGlobalPropagator(new CompositePropagator({ propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()] }));
+      try {
+        const c = new TestConnector();
+        c.traceContext = { propagateHeader: true };
+        const ctx = propagation.setBaggage(
+          trace.setSpanContext(otelContext.active(), { traceId: FAKE_TRACE_ID, spanId: FAKE_SPAN_ID, traceFlags: TraceFlags.SAMPLED, isRemote: false }),
+          propagation.createBaggage({ 'agent_health.run.id': { value: 'report-1' } })
+        );
+        otelContext.with(ctx, () => {
+          // Two case variants from an agent config / hook; one entry collides with ours.
+          // ALL variants are normalised into ONE canonical header.
+          const headers: Record<string, string> = { Baggage: 'tenant=acme,agent_health.run.id=stale', baggage: 'region=eu', BAGGAGE: 'tenant=globex' };
+          c.testInjectTraceparentHeaders(headers);
+          const keys = Object.keys(headers).filter((k) => k.toLowerCase() === 'baggage');
+          expect(keys).toHaveLength(1);
+          const entries = Object.fromEntries(headers[keys[0]].split(',').map((e) => e.trim().split('=')));
+          expect(entries).toEqual({ 'agent_health.run.id': 'report-1', tenant: 'globex', region: 'eu' });
+          expect(headers.traceparent).toBe(`00-${FAKE_TRACE_ID}-${FAKE_SPAN_ID}-01`);
+        });
+      } finally {
+        propagation.disable();
+        propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+      }
+    });
   });
 });

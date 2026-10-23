@@ -29,7 +29,8 @@ import {
   userStatePath,
 } from '@/lib/config/statePaths';
 import { getEvalRootsStatus, type EvalRootsStatus } from '@/lib/config/evalRoots';
-import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
+import type { StorageClusterConfig, ObservabilityClusterConfig, ObservabilitySourceConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
+import { isObservabilityConfigPresent } from '../../types/index.js';
 
 // Type for the config file sections owned by this module
 interface ConfigFileDataSources {
@@ -43,21 +44,8 @@ interface ConfigFileDataSources {
     awsService?: 'es' | 'aoss';
     tlsSkipVerify?: boolean;
   };
-  observability?: {
-    endpoint: string;
-    authType?: ClusterAuthType;
-    username?: string;
-    password?: string;
-    awsProfile?: string;
-    awsRegion?: string;
-    awsService?: 'es' | 'aoss';
-    tlsSkipVerify?: boolean;
-    indexes?: {
-      traces?: string;
-      logs?: string;
-      metrics?: string;
-    };
-  };
+  observability?: ObservabilityClusterConfig;
+  observabilitySources?: ObservabilitySourceConfig[];
 }
 
 // Config status returned to frontend (no raw credentials — username is safe to expose,
@@ -86,6 +74,7 @@ export interface ConfigStatus {
   observability: {
     configured: boolean;
     source: ConfigSource;
+    type?: ObservabilityBackendType;
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;
@@ -98,6 +87,26 @@ export interface ConfigStatus {
       logs?: string;
       metrics?: string;
     };
+    logGroups?: {
+      traces?: string;
+      logs?: string;
+    };
+    /** Additional sources (the primary above is implicitly first). No secrets. */
+    sources?: Array<{
+      id: string;
+      name?: string;
+      source: ConfigSource;
+      type: ObservabilityBackendType;
+      endpoint?: string;
+      authType?: ClusterAuthType;
+      username?: string;
+      hasPassword?: boolean;
+      awsProfile?: string;
+      awsRegion?: string;
+      awsService?: 'es' | 'aoss';
+      indexes?: { traces?: string; logs?: string; metrics?: string };
+      logGroups?: { traces?: string; logs?: string };
+    }>;
   };
   runtime?: {
     storage: {
@@ -128,6 +137,7 @@ export interface ConfigStatus {
 
 let tsStorageConfig: StorageClusterConfig | null = null;
 let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
+let tsObservabilitySources: ObservabilitySourceConfig[] = [];
 
 /**
  * Register cluster config authored in agent-health.config.ts.
@@ -138,13 +148,22 @@ let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
 export function setTsClusterConfig(opts: {
   storage?: StorageClusterConfig | null;
   observability?: ObservabilityClusterConfig | null;
+  observabilitySources?: ObservabilitySourceConfig[] | null;
 }): void {
   if (opts.storage !== undefined) {
     tsStorageConfig = opts.storage && opts.storage.endpoint ? opts.storage : null;
   }
   if (opts.observability !== undefined) {
-    tsObservabilityConfig = opts.observability && opts.observability.endpoint ? opts.observability : null;
+    tsObservabilityConfig = isObservabilityConfigPresent(opts.observability) ? opts.observability : null;
   }
+  if (opts.observabilitySources !== undefined) {
+    tsObservabilitySources = (opts.observabilitySources ?? []).filter((s) => s && s.id && isObservabilityConfigPresent(s));
+  }
+}
+
+/** Additional observability sources authored in agent-health.config.ts (may be empty). */
+export function getObservabilitySourcesFromTs(): ObservabilitySourceConfig[] {
+  return tsObservabilitySources;
 }
 
 /** Storage cluster config authored in agent-health.config.ts, or null. */
@@ -161,6 +180,7 @@ export function getObservabilityConfigFromTs(): ObservabilityClusterConfig | nul
 export function __resetTsClusterConfigForTests(): void {
   tsStorageConfig = null;
   tsObservabilityConfig = null;
+  tsObservabilitySources = [];
 }
 
 /**
@@ -252,12 +272,14 @@ export function clearStorageConfig(): void {
 export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | null {
   const config = readConfigFromDisk() as ConfigFileDataSources;
 
-  if (!config?.observability?.endpoint) {
+  if (!isObservabilityConfigPresent(config?.observability)) {
     return null;
   }
 
   return {
-    endpoint: config.observability.endpoint,
+    type: config.observability!.type,
+    endpoint: config.observability!.endpoint,
+    logGroups: config.observability!.logGroups,
     authType: config.observability.authType,
     username: config.observability.username,
     password: config.observability.password,
@@ -267,6 +289,45 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
     tlsSkipVerify: config.observability.tlsSkipVerify,
     indexes: config.observability.indexes,
   };
+}
+
+/** Additional observability sources from the runtime state file (ui-first). */
+export function getObservabilitySourcesFromFile(): ObservabilitySourceConfig[] {
+  const config = readConfigFromDisk() as ConfigFileDataSources;
+  return (config?.observabilitySources ?? []).filter((s) => s && s.id && isObservabilityConfigPresent(s));
+}
+
+/** Upsert one additional observability source (by id) in the project state file. */
+export function saveObservabilitySource(source: ObservabilitySourceConfig): void {
+  const existing = ((readStateScope('project').observabilitySources as ObservabilitySourceConfig[] | undefined) ?? []);
+  const prev = existing.find((s) => s.id === source.id);
+  const isCloudWatch = source.type === 'cloudwatch';
+  const next: ObservabilitySourceConfig = {
+    id: source.id,
+    ...(source.name && { name: source.name }),
+    type: source.type ?? 'opensearch',
+    ...(source.endpoint && { endpoint: source.endpoint }),
+    ...(source.authType && { authType: source.authType }),
+    ...(!isCloudWatch && (source.username ?? prev?.username) && { username: source.username ?? prev?.username }),
+    ...(!isCloudWatch && (source.password ?? prev?.password) && { password: source.password ?? prev?.password }),
+    ...(source.awsProfile && { awsProfile: source.awsProfile }),
+    ...(source.awsRegion && { awsRegion: source.awsRegion }),
+    ...(source.awsService && { awsService: source.awsService }),
+    ...(source.tlsSkipVerify !== undefined && { tlsSkipVerify: source.tlsSkipVerify }),
+    ...(source.indexes && Object.keys(source.indexes).length > 0 && { indexes: source.indexes }),
+    ...(source.logGroups && Object.keys(source.logGroups).length > 0 && { logGroups: source.logGroups }),
+  };
+  const sources = prev ? existing.map((s) => (s.id === source.id ? next : s)) : [...existing, next];
+  writeStateScope({ observabilitySources: sources }, 'project');
+}
+
+/** Remove one additional observability source (by id) from the project state file. */
+export function deleteObservabilitySource(id: string): boolean {
+  const existing = ((readStateScope('project').observabilitySources as ObservabilitySourceConfig[] | undefined) ?? []);
+  const next = existing.filter((s) => s.id !== id);
+  if (next.length === existing.length) return false;
+  writeStateScope({ observabilitySources: next.length ? next : undefined }, 'project');
+  return true;
 }
 
 /**
@@ -280,11 +341,16 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
   const resolvedUsername = obsConfig.username ?? existingObs.username;
   const resolvedPassword = obsConfig.password ?? existingObs.password;
 
+  // Credentials are only ever carried over within the OpenSearch backend —
+  // switching to CloudWatch drops any stored basic-auth secret.
+  const isCloudWatch = obsConfig.type === 'cloudwatch';
   const observability = {
-    endpoint: obsConfig.endpoint,
+    ...(obsConfig.type && { type: obsConfig.type }),
+    ...(obsConfig.endpoint && { endpoint: obsConfig.endpoint }),
+    ...(obsConfig.logGroups && Object.keys(obsConfig.logGroups).length > 0 && { logGroups: obsConfig.logGroups }),
     ...(obsConfig.authType && { authType: obsConfig.authType }),
-    ...(resolvedUsername && { username: resolvedUsername }),
-    ...(resolvedPassword && { password: resolvedPassword }),
+    ...(!isCloudWatch && resolvedUsername && { username: resolvedUsername }),
+    ...(!isCloudWatch && resolvedPassword && { password: resolvedPassword }),
     ...(obsConfig.awsProfile && { awsProfile: obsConfig.awsProfile }),
     ...(obsConfig.awsRegion && { awsRegion: obsConfig.awsRegion }),
     ...(obsConfig.awsService && { awsService: obsConfig.awsService }),
@@ -352,14 +418,25 @@ export function getConfigStatus(agents?: any[]): ConfigStatus {
   let obsSource: ConfigSource = 'none';
   let activeObs: Partial<ObservabilityClusterConfig> = {};
   let obsIndexes: ConfigStatus['observability']['indexes'];
-  if (tsObservabilityConfig?.endpoint) {
+  if (isObservabilityConfigPresent(tsObservabilityConfig)) {
     obsSource = 'typescript';
-    activeObs = tsObservabilityConfig;
-    obsIndexes = tsObservabilityConfig.indexes;
-  } else if (config?.observability?.endpoint) {
+    activeObs = tsObservabilityConfig!;
+    obsIndexes = tsObservabilityConfig!.indexes;
+  } else if (isObservabilityConfigPresent(config?.observability)) {
     obsSource = 'file';
-    activeObs = config.observability;
-    obsIndexes = config.observability.indexes;
+    activeObs = config.observability!;
+    obsIndexes = config.observability!.indexes;
+  } else if (process.env.OBSERVABILITY_TYPE === 'cloudwatch' && (process.env.CLOUDWATCH_REGION || process.env.AWS_REGION)) {
+    obsSource = 'environment';
+    activeObs = {
+      type: 'cloudwatch',
+      awsRegion: process.env.CLOUDWATCH_REGION || process.env.AWS_REGION,
+      awsProfile: process.env.CLOUDWATCH_AWS_PROFILE,
+      logGroups: {
+        traces: process.env.CLOUDWATCH_TRACES_LOG_GROUP,
+        logs: process.env.CLOUDWATCH_LOGS_LOG_GROUP,
+      },
+    };
   } else if (process.env.OPENSEARCH_LOGS_ENDPOINT) {
     obsSource = 'environment';
     activeObs = {
@@ -414,6 +491,7 @@ export function getConfigStatus(agents?: any[]): ConfigStatus {
     observability: {
       configured: obsSource !== 'none',
       source: obsSource,
+      type: obsSource === 'none' ? undefined : (activeObs.type === 'cloudwatch' ? 'cloudwatch' : 'opensearch'),
       endpoint: activeObs.endpoint,
       authType: activeObs.authType,
       username: activeObs.username,
@@ -422,6 +500,25 @@ export function getConfigStatus(agents?: any[]): ConfigStatus {
       awsRegion: activeObs.awsRegion,
       awsService: activeObs.awsService,
       indexes: obsIndexes,
+      logGroups: activeObs.logGroups,
+      sources: [
+        ...tsObservabilitySources.map((src) => ({ src, source: 'typescript' as ConfigSource })),
+        ...(config?.observabilitySources ?? []).filter((src) => src && src.id && isObservabilityConfigPresent(src)).map((src) => ({ src, source: 'file' as ConfigSource })),
+      ].map(({ src, source }) => ({
+        id: src.id,
+        name: src.name,
+        source,
+        type: (src.type === 'cloudwatch' ? 'cloudwatch' : 'opensearch') as ObservabilityBackendType,
+        endpoint: src.endpoint,
+        authType: src.authType,
+        username: src.username,
+        hasPassword: Boolean(src.password),
+        awsProfile: src.awsProfile,
+        awsRegion: src.awsRegion,
+        awsService: src.awsService,
+        indexes: src.indexes,
+        logGroups: src.logGroups,
+      })),
     },
     runtime: {
       storage: {

@@ -27,7 +27,10 @@ import type {
   StorageClusterConfig,
   ObservabilityClusterConfig,
   Evaluator,
+  MetricsResult,
+  ObservabilityBackendType,
 } from '../../types/index.js';
+import type { ServiceWindowHint } from '../services/tracesService.js';
 
 // ============================================================================
 // Query Types
@@ -66,6 +69,10 @@ export interface RunSearchFilters {
 
 export interface LogsQueryOptions {
   runId?: string;
+  /** Correlate on the log record's trace id (CloudWatch OTel logs carry it top-level). */
+  traceId?: string;
+  /** Agent `service.name`; selects the per-service log group on CloudWatch. */
+  serviceName?: string;
   query?: string;
   startTime?: number;
   endTime?: number;
@@ -254,23 +261,63 @@ export interface IEvaluatorOperations {
  * Logs query operations
  */
 export interface ILogsOperations {
-  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number }>;
+  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number; truncated?: boolean; warnings?: Array<{ source: string; message: string }> }>;
 }
 
 /**
  * Traces query operations
  */
 export interface ITracesOperations {
-  query(options: TracesQueryOptions): Promise<{ spans: Span[]; total: number; nextCursor?: string | null; hasMore?: boolean }>;
+  query(options: TracesQueryOptions): Promise<{
+    spans: Span[];
+    total: number;
+    nextCursor?: string | null;
+    hasMore?: boolean;
+    /** True when the backend hit a scan/row cap — the result is a lower bound, not the whole trace set. */
+    truncated?: boolean;
+    /** Composite backend: sources that failed (named) while the others answered. */
+    warnings?: Array<{ source: string; message: string }>;
+  }>;
   getByTraceId(traceId: string): Promise<Span[]>;
   getByRunIds(runIds: string[]): Promise<Span[]>;
 }
 
 /**
- * Metrics query operations (placeholder for future)
+ * Per-run metrics (tokens / cost / duration / calls) derived from trace spans.
+ * Each backend fetches the run's spans its own way; the math is shared
+ * (`computeMetricsFromSpans` in server/services/metricsService.ts).
+ */
+/** Correlators for one run's metrics (same hints `/api/traces` accepts). */
+export interface RunMetricsHints {
+  sessionId?: string;
+  traceId?: string;
+  agents?: ServiceWindowHint[];
+}
+
+/** Per-key hints for a batch metrics request (keys are the caller's run ids). */
+export interface BatchMetricsHints {
+  sessionIdByRunId?: Record<string, string>;
+  traceIdByRunId?: Record<string, string>;
+  agentsByRunId?: Record<string, ServiceWindowHint[]>;
+}
+
+/**
+ * Per-run metrics (tokens / cost / duration / calls) derived from trace spans.
+ * Each backend fetches the spans its own way; attribution and the math are
+ * shared (`groupAndCompute` / `computeMetricsFromSpans` in
+ * server/services/metricsService.ts) so every backend reports identically.
  */
 export interface IMetricsOperations {
-  // Future: Add metrics query operations
+  forRun(runId: string, hints?: RunMetricsHints): Promise<MetricsResult>;
+  forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]>;
+}
+
+/** Human-readable identity of the active observability backend (Settings / health UI). */
+export interface ObservabilityBackendInfo {
+  type: ObservabilityBackendType | 'file' | 'composite';
+  /** Where traces are read from: index pattern, log group, or directory. */
+  target: string;
+  region?: string;
 }
 
 /**
@@ -316,6 +363,7 @@ export interface IObservabilityModule {
   metrics: IMetricsOperations;
   health(): Promise<HealthStatus>;
   isConfigured(): boolean;
+  describe(): ObservabilityBackendInfo;
 }
 
 // ============================================================================

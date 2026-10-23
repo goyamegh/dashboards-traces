@@ -243,6 +243,152 @@ For a fully self-contained check with no observability cluster, point the eval
 span exporter at the server's own OTLP receiver:
 `OTEL_EVAL_ENABLED=true OTEL_EVAL_EXPORTER_ENDPOINT=http://127.0.0.1:<port>/v1/traces`
 (spans land in the file trace store; the metrics check reports SKIP).
+### CloudWatch Observability (Optional)
+
+Read traces, logs and metrics from **Amazon CloudWatch** instead of an OpenSearch
+cluster. Agents export OTLP to the X-Ray OTLP endpoint
+(`https://xray.<region>.amazonaws.com/v1/traces`); with
+[CloudWatch Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Transaction-Search.html)
+enabled every span lands as a structured record in the `aws/spans` log group,
+which Agent Health reads with Logs Insights (indexed; correlation and search)
+plus a short `FilterLogEvents` scan of the newest minutes (spans Insights has
+not indexed yet). Application logs are read from one log group per agent, named
+after the agent's OTel `service.name`.
+
+```ts
+// agent-health.config.ts — the whole change for an existing OpenSearch user
+observability: {
+  type: 'cloudwatch',
+  awsRegion: 'us-east-1',
+  awsProfile: 'default',                        // optional → default credential chain
+  // logGroups: { traces: 'aws/spans', logs: '/agent-health/{service.name}' },  // defaults
+}
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OBSERVABILITY_TYPE` | `cloudwatch` selects this backend (`opensearch` / unset = OpenSearch) | - |
+| `CLOUDWATCH_REGION` | AWS region (falls back to `AWS_REGION`) | - |
+| `CLOUDWATCH_AWS_PROFILE` | AWS profile (default credential chain if omitted) | - |
+| `CLOUDWATCH_TRACES_LOG_GROUP` | Log group Transaction Search writes spans to | `aws/spans` |
+| `CLOUDWATCH_LOGS_LOG_GROUP` | Per-agent log group template; `{service.name}` is replaced with the agent's `traceContext.serviceName` | `/agent-health/{service.name}` |
+
+`endpoint`, `indexes` and basic-auth fields are not used by this backend. Trace
+correlation (strategies A–D in [AGENTS.md](../AGENTS.md)) is identical to the
+OpenSearch reader: agents should adopt the incoming `traceparent`, and may stamp
+the `agent_health.run.id` W3C **baggage** entry Agent Health sends alongside it
+as a span attribute (see "What Agent Health sends to your agent" below).
+
+**How it reads, and its bounds.** Every request runs two reads in parallel and
+unions them: a Logs Insights query over the whole window (indexed, so it costs
+seconds even on a multi-GB `aws/spans`; the only path for service-name +
+time-window correlation and free-text search) and a `FilterLogEvents` term scan
+for the exact ids (trace id, run ids, session ids) over the newest 20 minutes
+of the window only — Insights indexes `aws/spans` with a lag of minutes, and
+that scan is what makes a span visible seconds after ingestion (`aws/spans`
+records are stamped with the span's **end** time, so a long-running span that
+just finished is in the slice too). The scan reads the slice in 5-minute
+partitions, newest first, with a budget of 10 pages, so a busy account's group
+can never turn it into a linear read — and if the budget runs out before the
+slice is read, the result is marked partial rather than presented as whole (an
+earlier exact-first design scanned up to 50 MB before consulting Insights: a
+trace lookup on a 15 GB `aws/spans` took 45 s; it now takes the Insights
+query's few seconds). If one of the two paths fails (throttled, timed out) the
+other still answers and the result is marked partial; only both failing is an
+error. Batch metrics run the exact ids first (fresh slice ∥ Insights over the
+lookback) and then one Insights query for the service-name windows of only
+those runs the ids did not find an agent span for, over those runs' own
+windows — so a busy service's window spans cannot crowd another run's exact
+matches out of the 10,000-row result. A trace-id lookup in an application log
+group scans only the trace's own window (±5 min, derived from its complete
+span set), falling back to a 24-hour lookback (`logsLookbackMs`) when the
+trace is not in that source or was itself partial; log lines that carry a
+different trace id are dropped, lines without one that mention the id are
+kept. Every query is bounded, and a result that hit a bound is reported as partial
+(the Traces tab shows a "results are partial" warning; metrics carry
+`partial: true`) rather than presented as the whole picture:
+
+| Bound | Default | Where |
+|---|---|---|
+| Scan window for id-only requests with no run window | 7 days (`lookbackMs`) | request time → back |
+| Scan window when the request carries the run's window | the run window ± 5 min | run-report Traces tab |
+| Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest 30 days are scanned and the result is marked partial (Traces tab warning / `truncated` on logs / `partial` on metrics) |
+| FilterLogEvents slice for exact ids in `aws/spans` | newest 20 min of the window, 5-min partitions newest first, ≤ 10 pages (≈ 10 MB) | the Insights query covers the rest; an exhausted budget is partial |
+| FilterLogEvents pages per application-log-group scan | 50 (≈ 50 MB) | partial beyond |
+| Trace-id lookup in application log groups | the trace's window ± 5 min, else 24 h (`logsLookbackMs`) | |
+| Rows per query (both paths) | 10,000 | partial beyond |
+| Concurrent AWS calls per backend instance | 4 | queued |
+| Log groups discovered for logs without a service name | 20 | partial beyond |
+| Insights query lifetime | 30 s, then `StopQuery` | |
+
+Offset paging of a traces result reuses the snapshot the first page came
+from for 60 s instead of re-scanning.
+
+**What Agent Health sends to your agent.** When a connector has
+`traceContext.propagateHeader` enabled (HTTP agents) Agent Health injects the
+W3C `traceparent` header and a `baggage` header containing
+`agent_health.run.id=<report id>` into every request to the configured agent
+endpoint — including third-party endpoints you configure. Existing `baggage`
+headers from your agent config or a `beforeRequest` hook (any casing) are
+merged into one canonical header, not replaced (Agent Health's key wins on a
+collision). Disable
+`propagateHeader` if the agent must not receive these headers.
+
+**One-time account setup**
+
+1. Enable Transaction Search in the account/region
+   (`aws xray update-trace-segment-destination --destination CloudWatchLogs`);
+   this creates and fills `aws/spans`.
+2. Grant the Agent Health profile read access:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery", "logs:DescribeLogGroups"],
+    "Resource": [
+      "arn:aws:logs:<region>:<account>:log-group:aws/spans:*",
+      "arn:aws:logs:<region>:<account>:log-group:/agent-health/*"
+    ]
+  }, {
+    "Effect": "Allow",
+    "Action": ["logs:DescribeLogGroups", "logs:StopQuery"],
+    "Resource": "*"
+  }]
+}
+```
+
+Settings → Observability shows the active CloudWatch backend (region, profile,
+log groups) read-only, with a Test Connection that verifies credentials, that
+`aws/spans` exists, and that at least one per-agent log group is present.
+
+### Several observability sources at once
+
+Read more than one source side by side — e.g. your own OpenSearch cluster
+**and** a team CloudWatch account. `observability` stays the primary source;
+add the others under `observabilitySources` (same fields as `observability`,
+plus `id` and a display `name`):
+
+```ts
+observability: { endpoint: 'https://my-cluster…', authType: 'sigv4', awsRegion: 'us-east-1' },
+observabilitySources: [
+  { id: 'team-cloudwatch', name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default' },
+],
+```
+
+How the sources combine:
+
+| Surface | Behaviour |
+|---|---|
+| Traces, logs | Every source is queried; results are merged into one list, newest first, deduped by span id (an agent that ships to both appears once — the first configured source wins). Each span carries `agent_health.source = <name>`. A source that fails is named in a warning; the others still answer. |
+| Metrics | Taken from the **first** source (configured order) that holds the run's spans — never summed across sources, so dual-shipping is not double-counted. A source error is surfaced only when no source found spans. |
+| Health / Settings | Settings → Observability Data Sources lists every source as a `Type → fields` form (OpenSearch: endpoint, auth, indexes; CloudWatch: region, profile, log groups) with Test Connection / Save / Remove and a per-source health badge; `GET /api/observability/sources/health` returns one entry per source. |
+
+In ui-first mode the Settings card writes additional sources to
+`.agent-health/state.json` (`PUT`/`DELETE /api/storage/config/observability/sources/:id`);
+in code-first mode (an `agent-health.config.ts` is present) the card is
+read-only and the state file is ignored, exactly as for the primary.
 
 ### Agent Endpoints (Optional)
 

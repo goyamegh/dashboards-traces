@@ -71,7 +71,7 @@ export async function createApp(): Promise<Express> {
   // .ts wins and the runtime state file is ignored; otherwise the state file is
   // used. Pass `null` (not undefined) for absent fields so each createApp()
   // fully resets the bridge (undefined means "leave previous value").
-  setTsClusterConfig({ storage: config.storage ?? null, observability: config.observability ?? null });
+  setTsClusterConfig({ storage: config.storage ?? null, observability: config.observability ?? null, observabilitySources: config.observabilitySources ?? null });
   // Same bridge for `evalRoots` (where relative code-SDK `sourceFile`s are
   // resolved). `AGENT_HEALTH_EVAL_ROOTS` still wins over this at read time.
   setConfiguredEvalRoots(config.evalRoots ?? null);

@@ -9,9 +9,9 @@
 
 import { Request, Response, Router } from 'express';
 import { debug } from '@/lib/debug';
-import { computeMetrics, computeBatchMetrics, computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
+import { computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
 import type { ServiceWindowHint } from '../services/tracesService';
-import { getObservabilityClient } from '../services/observabilityClient.js';
+import { getObservabilityModule } from '../services/observabilityClient.js';
 import { MetricsResult } from '@/types';
 
 const router = Router();
@@ -99,14 +99,13 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
       }
     }
 
-    const obs = getObservabilityClient(req);
-    if (!obs) {
-      return res.status(503).json({ error: 'Observability data source not configured' });
-    }
+    // Every backend — including the zero-config file trace store fed by the
+    // embedded OTLP receiver — derives metrics from the spans it holds.
+    const obs = getObservabilityModule(req);
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
-    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces }, sessionId, traceId, agents);
+    const metrics = await obs.metrics.forRun(runId, { sessionId, traceId, agents });
 
     debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
@@ -203,24 +202,15 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
     let realResults: (MetricsResult | { runId: string; error: string; status: string })[] = [];
 
     if (realRunIds.length > 0) {
-      const obs = getObservabilityClient(req);
-
-      if (!obs) {
+      const obs = getObservabilityModule(req);
+      try {
+        realResults = await obs.metrics.forRuns(realRunIds, { sessionIdByRunId, traceIdByRunId, agentsByRunId });
+      } catch (e: any) {
         realResults = realRunIds.map((runId: string) => ({
           runId,
-          error: 'Observability data source not configured',
+          error: e.message,
           status: 'error'
         }));
-      } else {
-        try {
-          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces }, sessionIdByRunId, traceIdByRunId, agentsByRunId);
-        } catch (e: any) {
-          realResults = realRunIds.map((runId: string) => ({
-            runId,
-            error: e.message,
-            status: 'error'
-          }));
-        }
       }
     }
 

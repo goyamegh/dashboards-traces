@@ -19,8 +19,10 @@ import { Client } from '@opensearch-project/opensearch';
 import type {
   StorageClusterConfig,
   ObservabilityClusterConfig,
+  ClusterConfig,
   HealthStatus,
 } from '../../types/index.js';
+import { CloudWatchObservabilityModule } from './observability/CloudWatchObservabilityModule.js';
 import { STORAGE_INDEXES, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
 import { createOpenSearchClient, describeOpenSearchError } from '../services/opensearchClientFactory.js';
 import type { IStorageModule } from './types.js';
@@ -80,6 +82,9 @@ export async function testStorageConnection(config: StorageClusterConfig): Promi
  * Also verifies that the specified index patterns exist
  */
 export async function testObservabilityConnection(config: ObservabilityClusterConfig): Promise<TestConnectionResult> {
+  if (config.type === 'cloudwatch') {
+    return testCloudWatchConnection(config);
+  }
   if (!config.endpoint) {
     return { status: 'error', message: 'Endpoint is required' };
   }
@@ -88,7 +93,7 @@ export async function testObservabilityConnection(config: ObservabilityClusterCo
   let client: Client | null = null;
 
   try {
-    client = createOpenSearchClient(config);
+    client = createOpenSearchClient(config as ClusterConfig);
 
     // Test cluster health
     const healthResult = await client.cluster.health({ timeout: '10s' });
@@ -137,6 +142,44 @@ export async function testObservabilityConnection(config: ObservabilityClusterCo
       await client.close().catch(() => {});
     }
   }
+}
+
+/**
+ * Test a CloudWatch observability config: credentials resolve, the traces log
+ * group (Transaction Search's `aws/spans`) exists, and at least one log group
+ * matches the logs template prefix.
+ */
+async function testCloudWatchConnection(config: ObservabilityClusterConfig): Promise<TestConnectionResult> {
+  if (!config.awsRegion) {
+    return { status: 'error', message: 'awsRegion is required for CloudWatch' };
+  }
+  const startTime = Date.now();
+  const mod = new CloudWatchObservabilityModule({
+    region: config.awsRegion,
+    profile: config.awsProfile,
+    logGroups: config.logGroups,
+  });
+  const health = await mod.health();
+  const latencyMs = Date.now() - startTime;
+  if (health.status !== 'ok') {
+    return { status: 'error', message: [health.error, health.suggestion].filter(Boolean).join(' — '), latencyMs };
+  }
+  let message: string | undefined;
+  try {
+    const groups = await mod.listLogGroups();
+    if (groups.length === 0) {
+      message = `No log groups matching '${mod.logGroups.logs}' found yet — traces will work, application logs will be empty until an agent writes one`;
+    }
+  } catch {
+    // Logs are optional; the traces check above is what gates the connection.
+  }
+  return {
+    status: 'ok',
+    latencyMs,
+    clusterName: `CloudWatch Logs (${config.awsRegion})`,
+    clusterStatus: mod.logGroups.traces,
+    ...(message && { message }),
+  };
 }
 
 // ============================================================================

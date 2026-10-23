@@ -5,22 +5,32 @@
 
 import { Request, Response } from 'express';
 import logsRoutes from '@/server/routes/logs';
-import { fetchLogs, fetchLogsLegacy } from '@/server/services/logsService';
+import { fetchLogsLegacy } from '@/server/services/logsService';
 
-// Mock the logs service
+// Mock the logs service (legacy proxy only — /api/logs goes through the observability module)
 jest.mock('@/server/services/logsService', () => ({
-  fetchLogs: jest.fn(),
   fetchLogsLegacy: jest.fn(),
 }));
 
-// Mock the observability client
+// Mock the observability module factory
 jest.mock('@/server/services/observabilityClient', () => ({
-  getObservabilityClient: jest.fn(),
+  getObservabilityModule: jest.fn(),
 }));
-import { getObservabilityClient } from '@/server/services/observabilityClient';
-const mockGetObservabilityClient = getObservabilityClient as jest.MockedFunction<typeof getObservabilityClient>;
+import { getObservabilityModule } from '@/server/services/observabilityClient';
+const mockGetObservabilityModule = getObservabilityModule as jest.MockedFunction<typeof getObservabilityModule>;
 
-const mockFetchLogs = fetchLogs as jest.MockedFunction<typeof fetchLogs>;
+// The module's logs.query — what the route calls.
+const mockFetchLogs = jest.fn();
+function moduleOf(type: 'opensearch' | 'cloudwatch' | 'file') {
+  return {
+    logs: { query: mockFetchLogs },
+    traces: {} as any,
+    metrics: {} as any,
+    health: jest.fn(),
+    isConfigured: () => true,
+    describe: () => ({ type, target: 'x' }),
+  } as any;
+}
 const mockFetchLogsLegacy = fetchLogsLegacy as jest.MockedFunction<typeof fetchLogsLegacy>;
 
 // Helper to create mock request/response
@@ -51,7 +61,6 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Logs Routes', () => {
   const originalEnv = process.env;
 
-  const mockClient = { search: jest.fn(), close: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -62,10 +71,7 @@ describe('Logs Routes', () => {
       OPENSEARCH_LOGS_PASSWORD: 'admin',
       OPENSEARCH_LOGS_INDEX: 'test-logs-*',
     };
-    mockGetObservabilityClient.mockReturnValue({
-      client: mockClient as any,
-      indexes: { traces: 'otel-traces-*', logs: 'test-logs-*', metrics: 'metrics-*' },
-    });
+    mockGetObservabilityModule.mockReturnValue(moduleOf('opensearch'));
   });
 
   afterEach(() => {
@@ -74,11 +80,8 @@ describe('Logs Routes', () => {
 
   describe('POST /api/logs', () => {
     it('should return logs from service', async () => {
-      const mockResult = {
-        hits: { hits: [], total: { value: 1 } },
-        logs: [{ timestamp: '2024-01-01', index: 'test-logs', message: 'Test log', level: 'info', source: 'test' }],
-        total: 1,
-      };
+      const logs = [{ timestamp: '2024-01-01', index: 'test-logs', message: 'Test log', level: 'info', source: 'test' }];
+      const mockResult = { logs, total: 1 };
       mockFetchLogs.mockResolvedValue(mockResult);
 
       const { req, res } = createMocks({ runId: 'test-run-123' });
@@ -86,12 +89,8 @@ describe('Logs Routes', () => {
 
       await handler(req, res);
 
-      expect(mockFetchLogs).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'test-run-123' }),
-        expect.any(Object),
-        expect.any(String)
-      );
-      expect(res.json).toHaveBeenCalledWith(mockResult);
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({ runId: 'test-run-123' }));
+      expect(res.json).toHaveBeenCalledWith({ logs, total: 1, backend: 'opensearch' });
     });
 
     it('should use default size of 100', async () => {
@@ -102,11 +101,7 @@ describe('Logs Routes', () => {
 
       await handler(req, res);
 
-      expect(mockFetchLogs).toHaveBeenCalledWith(
-        expect.objectContaining({ size: 100 }),
-        expect.any(Object),
-        expect.any(String)
-      );
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({ size: 100 }));
     });
 
     it('should accept custom size', async () => {
@@ -117,11 +112,7 @@ describe('Logs Routes', () => {
 
       await handler(req, res);
 
-      expect(mockFetchLogs).toHaveBeenCalledWith(
-        expect.objectContaining({ size: 50 }),
-        expect.any(Object),
-        expect.any(String)
-      );
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({ size: 50 }));
     });
 
     it('should pass query and time range filters (epoch ms, matching LogsQueryOptions.startTime/endTime: number and the epoch_millis range query)', async () => {
@@ -139,15 +130,11 @@ describe('Logs Routes', () => {
 
       await handler(req, res);
 
-      expect(mockFetchLogs).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({
           query: 'error',
           startTime,
           endTime,
-        }),
-        expect.any(Object),
-        expect.any(String)
-      );
+        }));
     });
 
     it('should reject a non-numeric startTime with 400 (codex_review finding: previously untyped)', async () => {
@@ -191,7 +178,7 @@ describe('Logs Routes', () => {
     });
 
     it('should return 503 when observability not configured', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(moduleOf('file'));
 
       const { req, res } = createMocks({ runId: 'test' });
       const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
@@ -215,6 +202,14 @@ describe('Logs Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: expect.stringContaining('runId'),
       });
+    });
+
+    it('accepts a traceId as the scope when runId is absent (CloudWatch log correlation)', async () => {
+      mockFetchLogs.mockResolvedValue({ logs: [], total: 0 });
+      const { req, res } = createMocks({ traceId: 'a'.repeat(32), serviceName: 'svc' });
+      await getRouteHandler(logsRoutes, 'post', '/api/logs')(req, res);
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockFetchLogs).toHaveBeenCalledWith(expect.objectContaining({ traceId: 'a'.repeat(32), serviceName: 'svc' }));
     });
 
     it('should return 400 when runId is not a string', async () => {

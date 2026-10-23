@@ -19,6 +19,10 @@ import { debug } from '@/lib/debug';
 
 export interface LogsQueryOptions {
   runId?: string;
+  /** Correlate on the record's trace id (OTel log records: `traceId` / `trace_id`). */
+  traceId?: string;
+  /** Agent `service.name` (used by backends that keep one log group per service). */
+  serviceName?: string;
   query?: string;
   startTime?: number;
   endTime?: number;
@@ -63,9 +67,9 @@ export async function fetchLogs(
   client: Client,
   indexPattern: string = 'ml-commons-logs-*'
 ): Promise<LogsResponse> {
-  const { runId, query, startTime, endTime, size = 100 } = options;
+  const { runId, traceId, query, startTime, endTime, size = 100 } = options;
 
-  debug('LogsService', 'Fetching logs:', { runId, query, size });
+  debug('LogsService', 'Fetching logs:', { runId, traceId, query, size });
 
   // Build OpenSearch query
   const searchBody: any = {
@@ -80,7 +84,7 @@ export async function fetchLogs(
 
   // Add time range filter only if not searching by runId
   // When searching by runId, we want to find logs regardless of age
-  if (!runId) {
+  if (!runId && !traceId) {
     const now = Date.now();
     const effectiveEndTime = endTime || now;
     const effectiveStartTime = startTime || (now - 60 * 60 * 1000);
@@ -101,7 +105,13 @@ export async function fetchLogs(
     searchBody.query.bool.must.push({
       match: { message: runId }
     });
-  } else if (query) {
+  }
+  if (traceId) {
+    searchBody.query.bool.must.push({
+      multi_match: { query: traceId, fields: ['traceId', 'trace_id', 'traceID', 'attributes.trace_id'] }
+    });
+  }
+  if (query && !runId) {
     searchBody.query.bool.must.push({
       match: { message: query }
     });

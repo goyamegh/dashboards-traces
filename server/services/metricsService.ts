@@ -68,6 +68,10 @@ export function getPricing(modelId?: string): ModelPricing {
 interface OpenSearchSpanSource {
   name?: string;
   traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  /** Top-level OTel resource service name (read by the service-window attribution). */
+  serviceName?: string;
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
@@ -77,6 +81,13 @@ interface OpenSearchSpanSource {
   // attributes['agent_health.run.id'] for the runId. (Data Prepper trace-analytics-plain-raw.)
   attributes?: Record<string, any>;
 }
+
+/**
+ * Backend-neutral input to the metrics math: the OTel plain-raw span shape
+ * (nested `attributes`, ISO `startTime`/`endTime`, `durationInNanos`, numeric
+ * `status.code`). OpenSearch returns it directly; other backends map into it.
+ */
+export type MetricsSpanSource = OpenSearchSpanSource;
 
 /**
  * Read a span's attributes tolerant of BOTH OpenSearch schemas this cluster
@@ -132,7 +143,7 @@ function readOutputTokens(attrs: Record<string, any>): number {
  * they are not the agent's own work and must not inflate its token/cost/LLM
  * counts.
  */
-function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
+export function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
   return (
     attrs['gen_ai.operation.name'] === 'evaluation' ||
     spanName === 'test_case' ||
@@ -300,7 +311,7 @@ function resolveSpanAttribution(
  * carry the same string (or, for sloppy callers, a real run's id) be attributed
  * to this key. Keys are still always returned in the result set.
  */
-function buildChunkLookups(
+export function buildChunkLookups(
   chunk: string[],
   sessionIdByRunId?: Record<string, string>,
   traceIdByRunId?: Record<string, string>,
@@ -340,7 +351,7 @@ function buildChunkLookups(
  * bound — we cannot know which keys lost spans). Shared by both transport
  * branches.
  */
-function groupAndCompute(
+export function groupAndCompute(
   chunk: string[],
   allSpans: OpenSearchSpanSource[],
   lookups: ReturnType<typeof buildChunkLookups>,
@@ -364,6 +375,18 @@ function groupAndCompute(
     if (truncated) m.partial = true;
     return m;
   });
+}
+
+/**
+ * The per-key result for a chunk whose trace-store query FAILED (timeout,
+ * 5xx, throttle, rejected query). Deliberately NOT `computeMetricsFromSpans(runId, [])`:
+ * that shape (`status: 'pending', hasSpans: false`) means "we looked and
+ * found nothing" and renders as "no spans" — a transient store failure must
+ * instead say the truth: unknown, retry.
+ */
+export function failedMetricsResult(runId: string, error: string): MetricsResult {
+  const { hasSpans: _unknown, ...empty } = computeMetricsFromSpans(runId, []);
+  return { ...empty, status: 'error', error: error || 'trace-store query failed' };
 }
 
 /** The `size` cap of the batch query; results are flagged `partial` when hit. */
@@ -480,6 +503,8 @@ const METRICS_SOURCE_FIELDS = [
   'resource.attributes.*',
   'name',
   'traceId',
+  'spanId',
+  'parentSpanId',
   // Top-level OTel resource service name (both schemas). Needed to attribute
   // a span back to its Strategy-C hint (service.name + window) in the batch
   // path — without it in the projection the query MATCHES the span but the

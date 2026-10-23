@@ -14,7 +14,7 @@
  * - Input/output display for spans following OTEL conventions
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { PREFS_KEYS, SharedTimeRange, sharedTimeRangeToMinutes } from '@/lib/preferences';
 import {
@@ -73,6 +73,8 @@ interface TraceTableRow {
   traceId: string;
   rootSpanName: string;
   serviceName: string;
+  /** Where the trace was read from: the configured source name and its backend type. */
+  source: { name: string; type: string };
   startTime: Date;
   duration: number;
   spanCount: number;
@@ -81,6 +83,23 @@ interface TraceTableRow {
 }
 
 // ==================== Sub-Components ====================
+
+const SOURCE_TYPE_LABEL: Record<string, string> = { opensearch: 'OpenSearch', cloudwatch: 'CloudWatch', file: 'local file', composite: 'several' };
+
+/** Source name + backend type, e.g. "Team CloudWatch · CloudWatch". */
+function SourceBadge({ source }: { source: { name: string; type: string } }) {
+  const typeLabel = SOURCE_TYPE_LABEL[source.type] ?? source.type;
+  const sameAsType = source.name === source.type || source.name === typeLabel;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap" title={`Source: ${source.name} (${typeLabel})`}>
+      <span className="text-foreground truncate max-w-[160px]">{source.name}</span>
+      {!sameAsType && (
+        <span className="rounded border px-1 py-0 text-[10px] uppercase tracking-wide text-muted-foreground" data-testid="trace-source-type">{typeLabel}</span>
+      )}
+      {sameAsType && <span className="sr-only">{typeLabel}</span>}
+    </span>
+  );
+}
 
 interface SortableHeaderProps {
   column: keyof TraceTableRow | null;
@@ -233,6 +252,9 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected, isExpa
           {trace.serviceName || 'unknown'}
         </span>
       </td>
+      <td className="py-1.5 px-3 align-middle" data-testid="trace-source-cell">
+        <SourceBadge source={trace.source} />
+      </td>
       <td className="py-1.5 px-3 align-middle">
         <span className={`font-mono text-xs ${trace.duration > 5000 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
           {formatDuration(trace.duration)}
@@ -326,7 +348,11 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
               model(s) the trace ran against. The same TraceSummaryStrip
               is reused in the fullscreen header for visual consistency. */}
           <div className="flex items-center justify-between px-3 py-1.5 border-b bg-card">
-            <TraceSummaryStrip summary={headerSummary} />
+            <div className="flex items-center gap-3 min-w-0">
+              <TraceSummaryStrip summary={headerSummary} />
+              <span className="text-muted-foreground text-xs">·</span>
+              <span data-testid="expanded-trace-source"><SourceBadge source={trace.source} /></span>
+            </div>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
@@ -505,6 +531,9 @@ export const AgentTracesPage: React.FC = () => {
   // Trace data
   const [spans, setSpans] = useState<Span[]>([]);
   const [allTraces, setAllTraces] = useState<TraceTableRow[]>([]); // All fetched traces
+  // Backend reported by the last /api/traces answer ('opensearch' | 'cloudwatch' | 'file' | 'composite');
+  // identifies the source for a single-backend setup (the composite tags each span itself).
+  const backendRef = useRef<string | undefined>(undefined);
   const [displayedTraces, setDisplayedTraces] = useState<TraceTableRow[]>([]); // Currently displayed traces
   const [displayCount, setDisplayCount] = useState(100); // Number of traces to display
 
@@ -584,10 +613,19 @@ export const AgentTracesPage: React.FC = () => {
       const minStart = Math.min(...times.map(t => t.start));
       const maxEnd = Math.max(...times.map(t => t.end));
 
+      // Source identity: tagged per span by the composite backend; a single
+      // backend is identified by the `backend` the API reported.
+      const tagged = group.spans.find(s => s.attributes?.['agent_health.source']);
+      const source = {
+        name: (tagged?.attributes?.['agent_health.source'] as string | undefined) ?? (backendRef.current && backendRef.current !== 'composite' ? backendRef.current : 'unknown'),
+        type: (tagged?.attributes?.['agent_health.source.type'] as string | undefined) ?? (backendRef.current && backendRef.current !== 'composite' ? backendRef.current : 'unknown'),
+      };
+
       return {
         traceId: group.traceId,
         rootSpanName: rootSpan.name,
         serviceName: rootSpan.attributes?.['service.name'] || 'unknown',
+        source,
         startTime: new Date(minStart),
         duration: maxEnd - minStart,
         spanCount: group.spans.length,
@@ -660,6 +698,7 @@ export const AgentTracesPage: React.FC = () => {
         textSearch: debouncedSearch || undefined,
         size: 100,
       });
+      backendRef.current = result.backend ?? backendRef.current;
 
       if (result.warning) {
         setError(result.warning);
@@ -700,6 +739,7 @@ export const AgentTracesPage: React.FC = () => {
         size: 100,
         cursor: currentCursor,
       });
+      backendRef.current = result.backend ?? backendRef.current;
 
       const allSpans = [...spansRef.current, ...result.spans];
       setSpans(allSpans);
@@ -1519,6 +1559,9 @@ export const AgentTracesPage: React.FC = () => {
                       </th>
                       <th className="h-8 px-3 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b">
                         Service
+                      </th>
+                      <th className="h-8 px-3 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b" title="Observability source the trace was read from">
+                        Source
                       </th>
                       <th className="h-8 px-3 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b">
                         Duration

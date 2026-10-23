@@ -5,25 +5,34 @@
 
 import { Request, Response } from 'express';
 import metricsRoutes from '@/server/routes/metrics';
-import { computeMetrics, computeBatchMetrics, computeAggregateMetrics } from '@/server/services/metricsService';
+import { computeAggregateMetrics } from '@/server/services/metricsService';
 
-// Mock the metrics service
+// Mock the metrics service (aggregation + demo only — per-run math lives behind the module)
 jest.mock('@/server/services/metricsService', () => ({
-  computeMetrics: jest.fn(),
-  computeBatchMetrics: jest.fn(),
   computeMetricsFromSampleSpans: jest.fn().mockReturnValue(null),
   computeAggregateMetrics: jest.fn(),
 }));
 
-// Mock the observability client
+// Mock the observability module factory
 jest.mock('@/server/services/observabilityClient', () => ({
-  getObservabilityClient: jest.fn(),
+  getObservabilityModule: jest.fn(),
 }));
-import { getObservabilityClient } from '@/server/services/observabilityClient';
-const mockGetObservabilityClient = getObservabilityClient as jest.MockedFunction<typeof getObservabilityClient>;
+import { getObservabilityModule } from '@/server/services/observabilityClient';
+const mockGetObservabilityModule = getObservabilityModule as jest.MockedFunction<typeof getObservabilityModule>;
 
-const mockComputeMetrics = computeMetrics as jest.MockedFunction<typeof computeMetrics>;
-const mockComputeBatchMetrics = computeBatchMetrics as jest.MockedFunction<typeof computeBatchMetrics>;
+// The module's metrics operations — what the routes call.
+const mockComputeMetrics = jest.fn();
+const mockComputeBatchMetrics = jest.fn();
+function moduleOf(type: 'opensearch' | 'cloudwatch' | 'file') {
+  return {
+    metrics: { forRun: mockComputeMetrics, forRuns: mockComputeBatchMetrics },
+    logs: {} as any,
+    traces: {} as any,
+    health: jest.fn(),
+    isConfigured: () => true,
+    describe: () => ({ type, target: 'x' }),
+  } as any;
+}
 const mockComputeAggregateMetrics = computeAggregateMetrics as jest.MockedFunction<typeof computeAggregateMetrics>;
 
 // Helper to create mock request/response
@@ -55,15 +64,11 @@ function getRouteHandler(router: any, method: string, path: string) {
 
 describe('Metrics Routes', () => {
   const originalEnv = process.env;
-  const mockClient = { search: jest.fn(), close: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
     process.env = { ...originalEnv };
-    mockGetObservabilityClient.mockReturnValue({
-      client: mockClient as any,
-      indexes: { traces: 'otel-traces-*', logs: 'logs-*', metrics: 'metrics-*' },
-    });
+    mockGetObservabilityModule.mockReturnValue(moduleOf('opensearch'));
   });
 
   afterEach(() => {
@@ -92,10 +97,7 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.objectContaining({
-        client: mockClient,
-        indexPattern: 'otel-traces-*',
-      }), undefined, undefined, undefined);
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', { sessionId: undefined, traceId: undefined, agents: undefined });
       expect(res.json).toHaveBeenCalledWith(mockMetrics);
     });
 
@@ -110,7 +112,7 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.any(Object), 'session-aaa', undefined, undefined);
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', { sessionId: 'session-aaa', traceId: undefined, agents: undefined });
     });
 
     it('should forward a traceId query param to computeMetrics (Strategy A)', async () => {
@@ -133,27 +135,20 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeMetrics).toHaveBeenCalledWith(
-        'test-run-123',
-        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
-        undefined,
-        'trace-abc',
-        undefined
-      );
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', { sessionId: undefined, traceId: 'trace-abc', agents: undefined });
     });
 
-    it('should return 503 when observability not configured', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+    it('serves the file backend too (zero-config traces → metrics), instead of 503', async () => {
+      mockGetObservabilityModule.mockReturnValue(moduleOf('file'));
+      mockComputeMetrics.mockResolvedValue({ runId: 'test-run-123', traceId: null, totalTokens: 0, inputTokens: 0, outputTokens: 0, llmCalls: 0, toolCalls: 0, toolsUsed: [], costUsd: 0, durationMs: 0, status: 'pending' as const });
 
       const { req, res } = createMocks({ runId: 'test-run-123' });
       const handler = getRouteHandler(metricsRoutes, 'get', '/api/metrics/:runId');
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith({
-        error: 'Observability data source not configured',
-      });
+      expect(res.status).not.toHaveBeenCalledWith(503);
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.any(Object));
     });
 
     it('should return 500 on service error', async () => {
@@ -223,13 +218,7 @@ describe('Metrics Routes', () => {
       await handler(req, res);
 
       expect(mockComputeBatchMetrics).toHaveBeenCalledTimes(1);
-      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
-        ['run-1', 'run-2'],
-        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
-        undefined,
-        undefined,
-        undefined
-      );
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1', 'run-2'], { sessionIdByRunId: undefined, traceIdByRunId: undefined, agentsByRunId: undefined });
       expect(mockComputeAggregateMetrics).toHaveBeenCalledWith([mockMetrics1, mockMetrics2]);
       expect(res.json).toHaveBeenCalledWith({
         metrics: [mockMetrics1, mockMetrics2],
@@ -250,13 +239,7 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
-        ['run-1'],
-        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
-        undefined,
-        { 'run-1': 'trace-1' },
-        undefined
-      );
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1'], { sessionIdByRunId: undefined, traceIdByRunId: { 'run-1': 'trace-1' }, agentsByRunId: undefined });
     });
 
     it('should reject a non-object traceIds body field', async () => {
@@ -284,13 +267,7 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
-        ['run-1'],
-        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
-        undefined,
-        { 'run-2': 'trace-2' },
-        undefined
-      );
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1'], { sessionIdByRunId: undefined, traceIdByRunId: { 'run-2': 'trace-2' }, agentsByRunId: undefined });
     });
 
     it('should return 400 when runIds is not an array', async () => {
@@ -351,14 +328,12 @@ describe('Metrics Routes', () => {
 
         await handler(req, res);
 
-        expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
-          ['report-no-runid', 'run-2', 'run-3'],
-          expect.any(Object),
-          undefined,
-          undefined,
-          // Empty hint arrays are dropped; everything else forwarded verbatim.
-          { 'report-no-runid': [hint], 'run-2': [hintWithSession] }
-        );
+        // Empty hint arrays are dropped; everything else forwarded verbatim.
+        expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['report-no-runid', 'run-2', 'run-3'], {
+          sessionIdByRunId: undefined,
+          traceIdByRunId: undefined,
+          agentsByRunId: { 'report-no-runid': [hint], 'run-2': [hintWithSession] },
+        });
         expect(res.status).not.toHaveBeenCalledWith(400);
       });
 
@@ -399,13 +374,7 @@ describe('Metrics Routes', () => {
 
       const ok = createMocks({ runId: 'r' }, {}, {}, { serviceName: 'example-agent', startedAt: '1000', endedAt: '2000', sessionId: 'sess-9' });
       await handler(ok.req, ok.res);
-      expect(mockComputeMetrics).toHaveBeenCalledWith(
-        'r',
-        expect.any(Object),
-        'sess-9',
-        undefined,
-        [{ serviceName: 'example-agent', startedAt: 1000, endedAt: 2000, sessionId: 'sess-9' }]
-      );
+      expect(mockComputeMetrics).toHaveBeenCalledWith('r', { sessionId: 'sess-9', traceId: undefined, agents: [{ serviceName: 'example-agent', startedAt: 1000, endedAt: 2000, sessionId: 'sess-9' }] });
 
       mockComputeMetrics.mockClear();
       const bad = createMocks({ runId: 'r' }, {}, {}, { serviceName: 'example-agent', startedAt: 'yesterday' });
@@ -430,45 +399,20 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
-        ['run-1', 'run-2'],
-        expect.any(Object),
-        { 'run-1': 'session-aaa' },
-        undefined,
-        undefined
-      );
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1', 'run-2'], { sessionIdByRunId: { 'run-1': 'session-aaa' }, traceIdByRunId: undefined, agentsByRunId: undefined });
     });
 
-    it('should return individual error results when observability not configured', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
-
-      mockComputeAggregateMetrics.mockReturnValue({
-        totalRuns: 0,
-        successRate: 0,
-        totalCostUsd: 0,
-        avgCostUsd: 0,
-        avgDurationMs: 0,
-        p50DurationMs: 0,
-        p95DurationMs: 0,
-        avgTokens: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        avgLlmCalls: 0,
-        avgToolCalls: 0,
-      });
+    it('batch: the file backend is served too', async () => {
+      mockGetObservabilityModule.mockReturnValue(moduleOf('file'));
+      mockComputeBatchMetrics.mockResolvedValue([]);
+      mockComputeAggregateMetrics.mockReturnValue({ totalRuns: 0, successRate: 0, totalCostUsd: 0, avgCostUsd: 0, avgDurationMs: 0, p50DurationMs: 0, p95DurationMs: 0, avgTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, avgLlmCalls: 0, avgToolCalls: 0 });
 
       const { req, res } = createMocks({}, { runIds: ['run-1'] });
       const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
 
       await handler(req, res);
 
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-        metrics: [expect.objectContaining({
-          runId: 'run-1',
-          error: 'Observability data source not configured',
-          status: 'error',
-        })],
-      }));
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1'], expect.any(Object));
     });
 
     it('should handle batch failure gracefully', async () => {
