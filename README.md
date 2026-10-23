@@ -96,6 +96,8 @@ Agent Health ships with built-in skill files for *Claude Code* and *Kiro* that t
 
 Get Agent Health running in minutes. Choose the option that best suits your needs:
 
+> **Requires Node.js 22.23.4+ or 24.22.1+** (or 26.12.1+). Earlier releases — including all of Node 18 and 20, which are end-of-life — ship a brotli decoder with an out-of-bounds write that allows remote code execution ([CVE-2026-111497](https://nvd.nist.gov/vuln/detail/CVE-2026-111497), [Node.js advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)). The server additionally refuses brotli-encoded request bodies (HTTP 415) as defence in depth, but the runtime upgrade is the real fix.
+
 ### Option 1: NPX (Fastest — No Setup)
 
 ```bash
