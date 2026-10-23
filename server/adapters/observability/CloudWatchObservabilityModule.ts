@@ -183,6 +183,18 @@ export function idTermsFilterPattern(ids: string[]): string | null {
   return terms.length === 1 ? JSON.stringify(terms[0]) : terms.map((t) => `?${JSON.stringify(t)}`).join(' ');
 }
 
+/** Span ids are unique only within a trace: dedupe on (traceId, spanId); records without a span id are kept. */
+export function dedupeSources(sources: OpenSearchSpanSource[]): OpenSearchSpanSource[] {
+  const seen = new Set<string>();
+  return sources.filter((src) => {
+    if (!src.spanId) return true;
+    const key = `${src.traceId ?? ''}:${src.spanId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Every exact correlator on a request: traceId (A), runIds (B), sessionIds (D). */
 export function exactCorrelatorIds(options: TracesQueryOptions): string[] {
   const ids: string[] = [];
@@ -310,8 +322,7 @@ class CloudWatchTracesOperations implements ITracesOperations {
       if (r.status === 'rejected') console.warn(`[CloudWatchTraces] ${name} path failed; answering from the other path (partial): ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
     }
     const parts = [exact, win].map((r) => (r.status === 'fulfilled' ? r.value : { sources: [], truncated: true }));
-    const seen = new Set<string>();
-    const sources = parts.flatMap((p) => p.sources).filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
+    const sources = dedupeSources(parts.flatMap((p) => p.sources));
     return { sources, truncated: parts.some((p) => p.truncated) || scan.clamped };
   }
 
@@ -419,8 +430,9 @@ class CloudWatchLogsOperations implements ILogsOperations {
       if (spans.length === 0) return null;
       const starts = spans.map((s) => Date.parse(s.startTime)).filter(Number.isFinite);
       const ends = spans.map((s) => Date.parse(s.endTime || s.startTime)).filter(Number.isFinite);
-      if (!starts.length) return null;
-      return { startMs: Math.min(...starts) - WINDOW_PAD_MS, endMs: Math.max(...ends) + WINDOW_PAD_MS };
+      if (!starts.length || !ends.length) return null;
+      const w = { startMs: Math.min(...starts) - WINDOW_PAD_MS, endMs: Math.max(...ends) + WINDOW_PAD_MS };
+      return w.endMs > w.startMs ? w : null;
     } catch {
       return null;
     }
@@ -449,7 +461,7 @@ class CloudWatchLogsOperations implements ILogsOperations {
     let startMs = startTime ?? (traceId || runId ? endMs - this.lookbackMs : endMs - 60 * 60 * 1000);
     if (traceId && startTime === undefined && endTime === undefined) {
       const w = await this.windowForTrace(traceId);
-      if (w) { startMs = w.startMs; endMs = Math.min(now, w.endMs); }
+      if (w && Math.min(now, w.endMs) > w.startMs) { startMs = w.startMs; endMs = Math.min(now, w.endMs); }
     }
     const clamped = endMs - startMs > this.maxWindowMs;
     if (clamped) startMs = endMs - this.maxWindowMs;
@@ -565,8 +577,7 @@ class CloudWatchMetricsOperations implements IMetricsOperations {
           truncated = truncated || win.truncated || winScan.clamped;
         }
 
-        const seen = new Set<string>();
-        const unique = sources.filter((src) => (src.spanId && seen.has(src.spanId) ? false : (src.spanId && seen.add(src.spanId), true)));
+        const unique = dedupeSources(sources);
         unique.sort((x, y) => Date.parse(x.startTime || '') - Date.parse(y.startTime || ''));
         results.push(...groupAndCompute(chunk, unique, lookups, truncated));
       } catch (e: any) {

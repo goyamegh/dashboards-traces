@@ -92,8 +92,9 @@ class CompositeTracesOperations implements ITracesOperations {
       if (!res) continue;
       if (res.truncated) truncated = true;
       for (const span of res.spans) {
-        if (seen.has(span.spanId)) continue; // dual-shipped span: first configured source wins
-        seen.add(span.spanId);
+        const key = `${span.traceId}:${span.spanId}`; // span ids are unique only within a trace
+        if (seen.has(key)) continue; // dual-shipped span: first configured source wins
+        seen.add(key);
         merged.push({ ...span, attributes: { ...(span.attributes || {}), [ATTR_AGENT_HEALTH_SOURCE]: src.name, [ATTR_AGENT_HEALTH_SOURCE_TYPE]: src.module.describe().type } });
       }
     }
@@ -173,7 +174,10 @@ class CompositeMetricsOperations implements IMetricsOperations {
     );
     return runIds.map((runId, i) => {
       const candidates = perSource.map((p) => ({ src: p.src, m: p.results?.[i], error: p.error }));
-      const withSpans = candidates.find((c) => c.m && c.m.status !== 'error' && c.m.hasSpans !== false && (c.m.totalTokens > 0 || c.m.llmCalls > 0 || c.m.toolCalls > 0 || c.m.durationMs > 0));
+      // Sources that hold the run's spans (explicit hasSpans, else any non-zero counter); a complete
+      // result beats a partial one, then configured order.
+      const holding = candidates.filter((c) => c.m && c.m.status !== 'error' && c.m.hasSpans !== false && (c.m.hasSpans === true || c.m.totalTokens > 0 || c.m.llmCalls > 0 || c.m.toolCalls > 0 || c.m.durationMs > 0));
+      const withSpans = holding.find((c) => !c.m!.partial) ?? holding[0];
       if (withSpans?.m) return { ...withSpans.m, source: withSpans.src.name } as MetricsResult;
       const errored = candidates.find((c) => c.error || c.m?.status === 'error');
       if (errored) {

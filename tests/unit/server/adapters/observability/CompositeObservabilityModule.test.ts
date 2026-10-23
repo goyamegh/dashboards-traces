@@ -93,6 +93,16 @@ describe('CompositeObservabilityModule', () => {
       expect(r).toMatchObject({ runId: 'r1', inputTokens: 100, llmCalls: 2, source: 'mine' });
     });
 
+    it('a complete result beats a partial one from an earlier source; a zero-counter result with hasSpans:true still counts as holding the run', async () => {
+      const partial = metrics('r1', { inputTokens: 5, totalTokens: 5, llmCalls: 1, status: 'success', hasSpans: true, partial: true });
+      const complete = metrics('r1', { inputTokens: 100, totalTokens: 110, llmCalls: 2, status: 'success', hasSpans: true });
+      const c = new CompositeObservabilityModule([fake('mine', { metrics: { r1: partial } }), fake('cw-team', { metrics: { r1: complete } })]);
+      expect(await c.metrics.forRun('r1')).toMatchObject({ inputTokens: 100, source: 'cw-team' });
+      const zero = metrics('r1', { status: 'success', hasSpans: true }); // spans present, nothing to count (e.g. only tool spans without tokens or duration)
+      const c2 = new CompositeObservabilityModule([fake('mine', { metrics: { r1: zero } }), fake('cw-team', { metrics: { r1: complete } })]);
+      expect(await c2.metrics.forRun('r1')).toMatchObject({ inputTokens: 0, source: 'mine' });
+    });
+
     it('falls through to a later source when the first has no spans for the run', async () => {
       const m = metrics('r1', { inputTokens: 7, totalTokens: 7, llmCalls: 1, status: 'success', hasSpans: true });
       const c = new CompositeObservabilityModule([fake('mine'), fake('cw-team', { metrics: { r1: m } })]);
