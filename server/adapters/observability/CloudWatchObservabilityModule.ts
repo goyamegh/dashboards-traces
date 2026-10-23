@@ -30,9 +30,8 @@ import type {
 } from '../types.js';
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../../types/index.js';
-import { transformSpan, type OpenSearchSpanSource } from '../../services/tracesService.js';
+import { transformSpan, isEvalOrJudgeSpan, type OpenSearchSpanSource } from '../../services/tracesService.js';
 import { buildChunkLookups, groupAndCompute, failedMetricsResult } from '../../services/metricsService.js';
-import { isEvalOrJudgeSpan } from '../../services/tracesService.js';
 import { debug } from '../../../lib/debug.js';
 import { computeUseUnion, matchesQuery, spanMs, toMs } from './traceQueryMatch.js';
 import {

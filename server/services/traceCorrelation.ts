@@ -61,11 +61,21 @@ export interface CorrelationInfo {
   windowFiltered: number;
 }
 
+/** A source that failed while the others answered (composite backend). */
+export interface TraceSourceWarning {
+  source: string;
+  message: string;
+}
+
 export interface TraceQueryPage {
   spans: Span[];
   total: number;
   nextCursor?: string | null;
   hasMore?: boolean;
+  /** Backend hit a scan/row/time-window cap — the page is a lower bound. */
+  truncated?: boolean;
+  /** Composite backend: named sources that failed while the others answered. */
+  warnings?: TraceSourceWarning[];
 }
 
 export type TraceQueryFn = (options: TracesQueryOptions) => Promise<TraceQueryPage>;
@@ -82,6 +92,20 @@ export interface CorrelatedTracesResult {
    */
   hasMore: boolean;
   correlation: CorrelationInfo;
+  /** True when ANY phase that contributed to this result was truncated. */
+  truncated?: boolean;
+  /** Union of the per-source failures reported by every phase that ran. */
+  warnings?: TraceSourceWarning[];
+}
+
+/** Carry a backend page's partial-result flags (truncated / per-source warnings) into the result. */
+function partialFlags(...pages: Array<Pick<TraceQueryPage, 'truncated' | 'warnings'>>): Pick<CorrelatedTracesResult, 'truncated' | 'warnings'> {
+  const truncated = pages.some((p) => p.truncated === true);
+  const warnings = pages.flatMap((p) => p.warnings ?? []);
+  return {
+    ...(truncated ? { truncated } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 type Phase = 'direct' | 'window';
@@ -219,6 +243,7 @@ async function runWindow(query: TraceQueryFn, options: TracesQueryOptions, wrapC
     nextCursor: wrapCursor && nextCursor ? encodePhaseCursor('window', nextCursor) : nextCursor,
     hasMore: page.hasMore ?? false,
     correlation: { strategy: 'window', windowFiltered: filtered },
+    ...partialFlags(page),
   };
 }
 
@@ -232,6 +257,7 @@ async function runDirect(query: TraceQueryFn, options: TracesQueryOptions, wrapC
     nextCursor: wrapCursor && nextCursor ? encodePhaseCursor('direct', nextCursor) : nextCursor,
     hasMore: page.hasMore ?? false,
     correlation: { strategy: pickDirectStrategy(spans, options), windowFiltered: 0 },
+    ...partialFlags(page),
   };
 }
 
@@ -264,13 +290,14 @@ export async function queryTracesPreciseFirst(
 
     const fallback = await runWindow(query, options, true);
     if (exact.spans.length === 0) return fallback;
-    if (fallback.spans.length === 0) return exact; // only our own eval spans exist — say how they were found
+    if (fallback.spans.length === 0) return { ...exact, ...partialFlags(exact, fallback) }; // only our own eval spans exist — say how they were found
     const seen = new Set(exact.spans.map((s) => s.spanId));
     const windowOnly = fallback.spans.filter((s) => !seen.has(s.spanId));
     return {
       ...fallback,
       spans: [...exact.spans, ...windowOnly],
       total: fallback.total + exact.spans.length,
+      ...partialFlags(exact, fallback),
     };
   }
 
@@ -284,5 +311,6 @@ export async function queryTracesPreciseFirst(
     nextCursor: page.nextCursor ?? null,
     hasMore: page.hasMore ?? false,
     correlation: { strategy: 'none', windowFiltered: 0 },
+    ...partialFlags(page),
   };
 }
