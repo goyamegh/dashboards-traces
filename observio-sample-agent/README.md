@@ -29,7 +29,7 @@ The agent supports two operation modes:
 ## Quick Start
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 22.23.4+ or 24.22.1+ (see `.nvmrc`; older releases are affected by [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/CVE-2026-111497))
 - AWS credentials with Bedrock access (Claude models)
 
 ### Setup

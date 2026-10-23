@@ -21,7 +21,7 @@ By the end of this guide, you will:
 ## Prerequisites
 
 **Required:**
-- **Node.js 18+** - [Download here](https://nodejs.org/)
+- **Node.js 22.23.4+ or 24.22.1+** (or 26.12.1+) - [Download here](https://nodejs.org/). Older releases — including every Node 18 and 20 — are affected by [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/CVE-2026-111497) (brotli decoder out-of-bounds write, remote code execution) and are not supported; `npm install` warns on them.
 - **npm** (comes with Node.js)
 
 **Optional (for production use):**
@@ -30,7 +30,7 @@ By the end of this guide, you will:
 
 **Check your versions:**
 ```bash
-node --version  # Should be v18.0.0 or higher
+node --version  # Should be v22.23.4+ or v24.22.1+
 npm --version   # Should be v8.0.0 or higher
 ```
 

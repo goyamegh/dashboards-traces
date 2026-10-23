@@ -636,7 +636,7 @@ GitHub Actions workflows are configured in `.github/workflows/`:
 ### Required Checks
 
 All PRs must pass:
-1. **Build and Tests** - Builds successfully on Node 18, 20, 22
+1. **Build and Tests** - Builds successfully on Node 22 and 24 (18/20 are EOL and vulnerable to CVE-2026-111497; `build-and-test (22)` is the required check)
 2. **Coverage Threshold** - Minimum 90% line coverage
 3. **License Headers** - All source files must have SPDX headers
 4. **Security Scan** - No high/critical vulnerabilities (npm audit)

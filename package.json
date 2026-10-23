@@ -23,7 +23,7 @@
     "traces"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "bin": {
     "agent-health": "./bin/cli.js"
