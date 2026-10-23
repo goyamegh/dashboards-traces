@@ -421,6 +421,7 @@ export function ObservabilitySourcesCard({ configStatus, onChanged }: CardProps)
         </CardTitle>
         <p className="text-sm text-muted-foreground">
           OTEL traces, logs and metrics. Several sources are read side by side — spans from every source appear in one view, each tagged with its source; metrics come from the first source that holds a run's spans.
+          Credentials are stored on the server (<code>.agent-health/state.json</code> or <code>agent-health.config.ts</code>), never in your browser.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">

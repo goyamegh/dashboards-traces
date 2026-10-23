@@ -238,7 +238,7 @@ export function classifyCloudWatchError(error: unknown): { category: 'auth' | 'c
     name === 'CredentialsProviderError' || name === 'UnrecognizedClientException' || name === 'ExpiredTokenException' ||
     name === 'AccessDeniedException' || name === 'InvalidSignatureException' || status === 403 || status === 401
   ) {
-    return { category: 'auth', message, suggestion: 'Refresh the AWS credentials for the configured profile (e.g. `ada credentials update …` / `aws sso login`) and confirm logs:FilterLogEvents, logs:StartQuery, logs:GetQueryResults, logs:StopQuery, logs:DescribeLogGroups.' };
+    return { category: 'auth', message, suggestion: 'Refresh the AWS credentials for the configured profile (e.g. `aws sso login` or `aws configure`) and confirm logs:FilterLogEvents, logs:StartQuery, logs:GetQueryResults, logs:StopQuery, logs:DescribeLogGroups.' };
   }
   if (name === 'TimeoutError' || name === 'NetworkingError' || /ENOTFOUND|ECONNREFUSED|ETIMEDOUT/.test(message)) {
     return { category: 'connection', message, suggestion: 'Check network access to the CloudWatch Logs endpoint for the configured region.' };
