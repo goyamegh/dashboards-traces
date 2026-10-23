@@ -176,7 +176,7 @@ export function cloudWatchLogToEntry(
   const bodyField = rec.body !== undefined ? rec.body : rec.message;
   const body = bodyField === undefined ? message : typeof bodyField === 'string' ? bodyField : JSON.stringify(bodyField);
   const tsFromField = (() => {
-    if (typeof rec.timestamp === 'number') return new Date(rec.timestamp).toISOString();
+    if (typeof rec.timestamp === 'number') return Number.isFinite(rec.timestamp) && Math.abs(rec.timestamp) < 8.64e15 ? new Date(rec.timestamp).toISOString() : undefined;
     if (typeof rec.timestamp === 'string') {
       // log4j-style "2026-10-23T02:07:19,042" uses a comma before the millis
       const parsed = Date.parse(rec.timestamp.replace(/,(\d{3})/, '.$1'));
