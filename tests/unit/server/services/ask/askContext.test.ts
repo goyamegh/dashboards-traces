@@ -204,6 +204,83 @@ describe('buildAskSnapshot', () => {
     const snap = await buildAskSnapshot(fakeStorage({}), {});
     expect(snap.markdown).toBe('');
   });
+
+  it('real-shaped gaps: legacy field names, missing snapshots, unnamed cases, no versions, 3+ compared runs incl. a missing one and an over-cap list', async () => {
+    const storage = fakeStorage({
+      reports: {
+        // an old report: no passFailStatus, judgeModelId instead of judgeModel, non-string trajectory content, object tool output
+        'rep-old': { id: 'rep-old', status: 'completed', judgeModelId: 'legacy-judge', trajectory: [{ type: 'tool_result', toolName: 'search', content: { a: 1 }, toolOutput: { rows: 3 }, toolArgs: { q: 'x' } }, { type: 'assistant', content: 'done', toolOutput: 'y'.repeat(900) }] },
+      },
+      evaluationRuns: {
+        // results reference a case the snapshots do not know; a result with status only; a failed one without a reportId
+        'run-a': { id: 'run-a', name: 'A', status: 'completed', testCaseSnapshots: [{ id: 'tc-1', name: 'One' }], results: { 'tc-1': { reportId: 'r-a1', passFailStatus: 'passed' }, 'tc-2': { status: 'failed' } } },
+        'run-b': { id: 'run-b', name: 'B', status: 'completed', results: { 'tc-1': { reportId: 'r-b1', passFailStatus: 'failed' }, 'tc-3': { reportId: 'r-b3', passFailStatus: 'passed' } } },
+        'run-c': { id: 'run-c', status: 'running', results: {} },
+      },
+      testCases: { 'tc-flat': { id: 'tc-flat', name: 'Flat', initialPrompt: 'legacy prompt', expectedOutcomes: ['legacy outcome'] } },
+      benchmarks: { 'bench-x': { id: 'bench-x', name: 'X' } },
+    });
+
+    // report with legacy fields → judgeModelId used, verdict falls back to status
+    const rep = await buildAskSnapshot(storage, { reportId: 'rep-old' });
+    expect(rep.markdown).toContain('### Report rep-old (completed)');
+    expect(rep.markdown).toContain('"judgeModel": "legacy-judge"');
+    expect(rep.markdown).toContain('"toolOutput": "{\\"rows\\":3}"');
+    expect(rep.markdown).toContain('"trajectoryIncluded": "complete"');
+    expect(rep.refs).toEqual({ reportId: 'rep-old' }); // nothing to follow
+
+    // evaluation run without snapshots / with a status-only result
+    const run = await buildAskSnapshot(storage, { runId: 'run-b' });
+    expect(run.markdown).toContain('"tc-1: failed"');
+    expect(run.markdown).toContain('"tc-3: passed"');
+    expect(run.markdown).toContain('Link: /evaluations/runs/run-b/inspect'); // no benchmark known → the unscoped run route
+
+    // compare: 3 runs + one missing + more than the cap → table, regression (tc-1 passed → failed), unnamed cases, missing note, cap note
+    const ids = ['run-a', 'run-b', 'run-c', 'run-missing', 'run-5', 'run-6', 'run-7'];
+    const cmp = await buildAskSnapshot(storage, { benchmarkId: 'bench-x', comparisonRunIds: ids });
+    expect(cmp.markdown).toContain('### Comparison (3 of 7 runs)');
+    expect(cmp.markdown).toContain('| test case | A | B | run-c |');
+    expect(cmp.markdown).toContain('| One (tc-1) | passed | failed | — |');
+    expect(cmp.markdown).toContain('| tc-2 (tc-2) | failed | — | — |');
+    expect(cmp.markdown).toContain('regressed (passed in baseline, failed in a later run): One;');
+    expect(cmp.markdown).toContain('improved: none.');
+    expect(cmp.markdown).toContain('- One: A → r-a1; B → r-b1; run-c → —');
+    expect(cmp.markdown).toContain('- run-c — id run-c, agent ?, stats {}');
+    expect(cmp.markdown).toContain('_Comparison runs not found: run-missing, run-5, run-6_');
+    expect(cmp.markdown).toContain('_Only the first 6 of 7 compared runs were loaded._');
+    expect(cmp.markdown).toContain('### Benchmark bench-x — "X"');
+    expect(cmp.markdown).toContain('"testCaseCount": 0');
+    expect(cmp.loaded).toEqual(['run run-a', 'run run-b', 'run run-c', 'benchmark bench-x']);
+
+    // two runs whose verdicts are identical → "No verdict changed"; a thrown lookup lands in the missing list
+    const same = fakeStorage({ evaluationRuns: { r1: { id: 'r1', results: { t: { passFailStatus: 'passed' } } }, r2: { id: 'r2', results: { t: { passFailStatus: 'passed' } } } } });
+    (same.evaluationRuns as any).getById = async (id: string) => { if (id === 'boom') throw new Error('timeout'); return id === 'r1' || id === 'r2' ? { id, results: { t: { passFailStatus: 'passed' } } } : null; };
+    const flat = await buildAskSnapshot(same, { comparisonRunIds: ['r1', 'r2', 'boom'] });
+    expect(flat.markdown).toContain('No verdict changed between these runs.');
+    expect(flat.markdown).not.toContain('Link: /compare'); // no benchmark id → no compare link
+    expect(flat.markdown).toContain('_Comparison runs not found: boom (timeout)_');
+
+    // a legacy test case (no versions[]) reads its top-level fields; an unknown benchmark adds no section
+    const tc = await buildAskSnapshot(storage, { testCaseId: 'tc-flat', benchmarkId: 'nope' });
+    expect(tc.markdown).toContain('"initialPrompt": "legacy prompt"');
+    expect(tc.markdown).toContain('"expectedOutcomes": [\n  "legacy outcome"\n ]');
+    expect(tc.markdown).not.toContain('### Benchmark');
+    expect(tc.loaded).toEqual(['test case tc-flat']);
+    const missingTc = await buildAskSnapshot(storage, { testCaseId: 'tc-none' });
+    expect(missingTc.markdown).toContain('### Test case tc-none\n_Not found in storage._');
+
+    // every lookup failing → one note per entity, never a throw
+    const broken = {
+      runs: { getById: async () => { throw new Error('r'); }, getByExperimentRun: async () => { throw new Error('x'); } },
+      evaluationRuns: { getById: async () => { throw new Error('e'); } },
+      testCases: { getById: async () => { throw new Error('t'); } },
+      benchmarks: { getById: async () => { throw new Error('b'); } },
+    } as unknown as IStorageModule;
+    const all = await buildAskSnapshot(broken, { reportId: 'r', runId: 'e', testCaseId: 't', benchmarkId: 'b', comparisonRunIds: ['c'] });
+    expect(all.markdown.match(/Failed to load: [retb]_/g)).toHaveLength(4);
+    expect(all.markdown).toContain('_Comparison runs not found: c (e)_');
+    expect(all.loaded).toEqual([]);
+  });
 });
 
 describe('prompt assembly', () => {
