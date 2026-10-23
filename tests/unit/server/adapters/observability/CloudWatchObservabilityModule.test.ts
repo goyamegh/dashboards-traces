@@ -6,6 +6,7 @@
 import {
   CloudWatchObservabilityModule,
   DEFAULT_LOOKBACK_MS,
+  DEFAULT_LOGS_LOOKBACK_MS,
   DEFAULT_MAX_WINDOW_MS,
   buildTracesInsightsQuery,
   traceIdFilterPattern,
@@ -154,6 +155,14 @@ describe('recordMappers', () => {
     expect(Date.parse(e.timestamp)).toBe(T0_MS + 8000);
     const plain = cloudWatchLogToEntry('hello world', 1700000000000, 'g');
     expect(plain).toMatchObject({ message: 'hello world', level: 'info', timestamp: '2023-11-14T22:13:20.000Z' });
+  });
+
+  it('maps an application-logger JSON record (snake_case trace_id / severity / ISO timestamp)', () => {
+    const line = JSON.stringify({ timestamp: '2026-10-23T01:47:54.473+00:00', severity: 'INFO', body: 'tool call: name=search_index', logger: 'agent.api.app', service: 'demo-agent', stage: 'prod', trace_id: 'f'.repeat(32), span_id: 'a1b2c3d4e5f60718' });
+    const e = cloudWatchLogToEntry(line, undefined, 'g');
+    expect(e).toMatchObject({ message: 'tool call: name=search_index', level: 'info', source: 'demo-agent', traceId: 'f'.repeat(32), spanId: 'a1b2c3d4e5f60718', timestamp: '2026-10-23T01:47:54.473Z' });
+    const log4j = cloudWatchLogToEntry(JSON.stringify({ timestamp: '2026-10-23T02:07:19,042', level: 'WARN', message: 'refresh failed' }), undefined, 'g');
+    expect(log4j).toMatchObject({ level: 'warn', message: 'refresh failed', timestamp: '2026-10-23T02:07:19.042Z' });
   });
 
   it('resolves the per-service log-group template', () => {
@@ -385,7 +394,7 @@ describe('CloudWatchObservabilityModule', () => {
   describe('logs', () => {
     it('resolves the per-service group and correlates by traceId', async () => {
       const res = await mod(reader).logs.query({ traceId: TRACE, serviceName: SERVICE });
-      expect(reader.calls.filter[0]).toMatchObject({ logGroup: `/agent-health/${SERVICE}`, pattern: traceIdFilterPattern(TRACE) });
+      expect(reader.calls.filter.find((c) => c.logGroup !== 'aws/spans')).toMatchObject({ logGroup: `/agent-health/${SERVICE}`, pattern: `"${TRACE}"` });
       expect(res.total).toBe(3);
       expect(res.logs.map((l) => l.spanId)).toContain('b93daa8692261d13');
       // newest first
@@ -396,8 +405,21 @@ describe('CloudWatchObservabilityModule', () => {
       reader.groups['/agent-health/other-agent'] = [];
       const res = await mod(reader).logs.query({ traceId: TRACE });
       expect(reader.calls.describe).toEqual(['/agent-health/']);
-      expect(reader.calls.filter.map((c) => c.logGroup).sort()).toEqual([`/agent-health/${SERVICE}`, '/agent-health/other-agent']);
+      expect(reader.calls.filter.map((c) => c.logGroup).filter((g) => g !== 'aws/spans').sort()).toEqual([`/agent-health/${SERVICE}`, '/agent-health/other-agent']);
       expect(res.total).toBe(3);
+    });
+
+    it('a trace-id lookup without bounds scans only the trace\'s own window (±5 min), derived from its spans', async () => {
+      const res = await mod(reader).logs.query({ traceId: TRACE, serviceName: SERVICE });
+      const logScan = reader.calls.filter.find((c) => c.logGroup === `/agent-health/${SERVICE}`);
+      const spanStarts = records.map((r) => Number(r.startTimeUnixNano) / 1e6);
+      expect(logScan.startMs).toBe(Math.floor(Math.min(...spanStarts)) - 5 * 60 * 1000);
+      expect(logScan.endMs - logScan.startMs).toBeLessThan(2 * 60 * 60 * 1000);
+      expect(res.total).toBe(3);
+      // An unknown trace falls back to the logs lookback.
+      await mod(reader).logs.query({ traceId: 'e'.repeat(32), serviceName: SERVICE });
+      const fallback = reader.calls.filter.at(-1);
+      expect(fallback.endMs - fallback.startMs).toBe(DEFAULT_LOGS_LOOKBACK_MS);
     });
 
     it('a missing per-service group is empty, not an error', async () => {
@@ -423,14 +445,14 @@ describe('CloudWatchObservabilityModule', () => {
       expect(res.truncated).toBe(true);
     });
 
-    it('browsing without ids defaults to the last hour; id lookups to the full lookback', async () => {
+    it('browsing without ids defaults to the last hour; a run-id lookup to the logs lookback', async () => {
       const m = mod(reader);
       await m.logs.query({ serviceName: SERVICE });
       const browse = reader.calls.filter.at(-1);
       expect(browse.endMs - browse.startMs).toBe(60 * 60 * 1000);
-      await m.logs.query({ serviceName: SERVICE, traceId: TRACE });
+      await m.logs.query({ serviceName: SERVICE, runId: RUN });
       const byId = reader.calls.filter.at(-1);
-      expect(byId.endMs - byId.startMs).toBe(DEFAULT_LOOKBACK_MS);
+      expect(byId.endMs - byId.startMs).toBe(DEFAULT_LOGS_LOOKBACK_MS); // application log groups: 24 h, not the span lookback
     });
   });
 
