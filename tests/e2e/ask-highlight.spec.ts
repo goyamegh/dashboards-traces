@@ -404,4 +404,63 @@ test.describe('Agent Health assistant — highlight & ask', () => {
     await expect(panel.locator('[data-testid="ask-panel-composer-input"]')).toBeDisabled();
     expect(asked).toBe(0);
   });
+
+  test('mounting the assistant keeps page layout bounded: a 90-case list still windows (60 + sentinel), panel open or closed', async ({ page, request, testData }) => {
+    // Regression: the assistant wraps every page in a div. A plain block div
+    // gave the pages' `h-full` / `flex-1 min-h-0` scroll containers no height
+    // to fill, so windowed lists grew to their full length and every
+    // "load more" sentinel was always in view (cases tab rendered 90/90,
+    // runs table lost its sentinel, compare tabs jittered while hydrating).
+    const CASE_COUNT = 90;
+    const testCases = Array.from({ length: CASE_COUNT }, (_, index) => ({
+      name: uniqueTestName(`ask-layout-${index}`),
+      description: 'Ask surface layout regression fixture',
+      category: 'RCA',
+      difficulty: 'Easy',
+      initialPrompt: `Investigate scenario ${index}`,
+      context: [],
+      expectedOutcomes: ['n/a'],
+    }));
+    const bulkRes = await request.post('/api/storage/test-cases/bulk', { data: { testCases } });
+    expect(bulkRes.ok()).toBeTruthy();
+    const createdIds: string[] = ((await bulkRes.json()).testCases || []).map((tc: any) => tc.id);
+    expect(createdIds).toHaveLength(CASE_COUNT);
+    testData.testCases(createdIds);
+    const benchmarkRes = await request.post('/api/storage/benchmarks', {
+      data: { name: uniqueTestName('ask-layout-benchmark'), description: 'Ask surface layout regression fixture', testCaseIds: createdIds },
+    });
+    expect(benchmarkRes.ok()).toBeTruthy();
+    const benchmark = await benchmarkRes.json();
+    const benchmarkId: string = benchmark.id || benchmark.benchmark?.id;
+    testData.benchmark(benchmarkId);
+
+    const route = `/evaluations/benchmarks/${encodeURIComponent(benchmarkId)}`;
+    await stubSessions(page, route);
+    await page.goto(route);
+    await page.waitForSelector('[data-testid="benchmark-cases-tab"]', { timeout: 30000 });
+
+    const options = page.locator('[role="option"]');
+    await expect(options.first()).toBeVisible({ timeout: 15000 });
+    const surface = page.locator('[data-testid="ask-surface"]');
+    const viewport = page.viewportSize()!;
+
+    // The surface fills exactly the main area (no taller than the viewport) and
+    // the list inside it is a real scroll container: first window + sentinel.
+    const assertBounded = async () => {
+      const surfaceHeight = await surface.evaluate((el) => el.getBoundingClientRect().height);
+      expect(surfaceHeight).toBeLessThanOrEqual(viewport.height);
+      const list = page.locator('[role="listbox"][aria-label="Benchmark cases"]');
+      const { scrollHeight, clientHeight } = await list.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+      expect(clientHeight).toBeLessThanOrEqual(viewport.height);
+      expect(scrollHeight).toBeGreaterThan(clientHeight);
+      await expect(page.getByTestId('case-list-load-more-sentinel')).toBeVisible();
+      expect(await options.count()).toBe(60);
+    };
+    await assertBounded();
+
+    // Opening the panel reserves width on the right but must not change the height contract.
+    await openPanelViaSidebar(page);
+    await expect.poll(() => surface.evaluate((el) => parseInt(getComputedStyle(el).paddingRight, 10))).toBe(560);
+    await assertBounded();
+  });
 });

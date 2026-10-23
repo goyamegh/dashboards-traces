@@ -89,7 +89,19 @@ export const AskSurface: React.FC<{ children: React.ReactNode }> = ({ children }
 
   return (
     <>
-      <div style={reserve ? { paddingRight: reserve } : undefined} data-testid="ask-surface" data-ask-panel-open={panelOpen || undefined}>
+      {/*
+       * The wrapper must stay a flex-column item of `SidebarInset` (`flex flex-col`):
+       * pages size their own scroll containers with `h-full` / `flex-1 min-h-0`
+       * (benchmark cases list, runs table, compare grid). A plain block div here
+       * gives them no height to fill, every windowed list grows to its full length
+       * and the "load more" sentinels are always in view.
+       */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        style={reserve ? { paddingRight: reserve } : undefined}
+        data-testid="ask-surface"
+        data-ask-panel-open={panelOpen || undefined}
+      >
         {children}
       </div>
 
