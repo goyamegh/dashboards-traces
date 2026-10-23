@@ -44,7 +44,7 @@ describe('CompositeObservabilityModule', () => {
       ]);
       const r = await c.traces.query({ traceId: 't1', size: 2 });
       expect(r.total).toBe(3);
-      expect(r.spans.map((s) => [s.spanId, s.attributes!['agent_health.source']])).toEqual([['b', 'mine'], ['c', 'cw-team']]);
+      expect(r.spans.map((s) => [s.spanId, s.attributes!['agent_health.source'], s.attributes!['agent_health.source.type']])).toEqual([['b', 'mine', 'opensearch'], ['c', 'cw-team', 'cloudwatch']]);
       expect(r.hasMore).toBe(true);
       const r2 = await c.traces.query({ traceId: 't1', size: 2, cursor: r.nextCursor! });
       expect(r2.spans.map((s) => s.spanId)).toEqual(['a']);

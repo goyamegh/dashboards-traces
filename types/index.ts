@@ -945,6 +945,8 @@ export interface TraceSearchResult {
   suggestion?: string;
   nextCursor?: string | null;
   hasMore?: boolean;
+  /** Which backend answered: 'opensearch' | 'cloudwatch' | 'file' | 'composite' (several sources). */
+  backend?: string;
 }
 
 /**
@@ -1922,8 +1924,10 @@ export interface ObservabilitySourceConfig extends ObservabilityClusterConfig {
   name?: string;
 }
 
-/** Span attribute set by the composite reader: which configured source a span came from. */
+/** Span attribute set by the composite reader: which configured source a span came from (its name). */
 export const ATTR_AGENT_HEALTH_SOURCE = 'agent_health.source';
+/** Span attribute set by the composite reader: that source's backend type ('opensearch' | 'cloudwatch' | 'file'). */
+export const ATTR_AGENT_HEALTH_SOURCE_TYPE = 'agent_health.source.type';
 
 /** Effective backend type for an observability config (defaults to 'opensearch'). */
 export function observabilityBackendType(config: Pick<ObservabilityClusterConfig, 'type'> | null | undefined): ObservabilityBackendType {

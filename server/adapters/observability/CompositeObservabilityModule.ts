@@ -36,7 +36,7 @@ import type {
   BatchMetricsHints,
 } from '../types.js';
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
-import { ATTR_AGENT_HEALTH_SOURCE } from '../../../types/index.js';
+import { ATTR_AGENT_HEALTH_SOURCE, ATTR_AGENT_HEALTH_SOURCE_TYPE } from '../../../types/index.js';
 import { spanMs } from './traceQueryMatch.js';
 
 export interface NamedSource {
@@ -94,7 +94,7 @@ class CompositeTracesOperations implements ITracesOperations {
       for (const span of res.spans) {
         if (seen.has(span.spanId)) continue; // dual-shipped span: first configured source wins
         seen.add(span.spanId);
-        merged.push({ ...span, attributes: { ...(span.attributes || {}), [ATTR_AGENT_HEALTH_SOURCE]: src.name } });
+        merged.push({ ...span, attributes: { ...(span.attributes || {}), [ATTR_AGENT_HEALTH_SOURCE]: src.name, [ATTR_AGENT_HEALTH_SOURCE_TYPE]: src.module.describe().type } });
       }
     }
     merged.sort((x, y) => spanMs(y) - spanMs(x));
@@ -137,7 +137,7 @@ class CompositeLogsOperations implements ILogsOperations {
     for (const { src, res } of results) {
       if (!res) continue;
       if (res.truncated) truncated = true;
-      for (const l of res.logs) logs.push({ ...l, [ATTR_AGENT_HEALTH_SOURCE]: src.name });
+      for (const l of res.logs) logs.push({ ...l, [ATTR_AGENT_HEALTH_SOURCE]: src.name, [ATTR_AGENT_HEALTH_SOURCE_TYPE]: src.module.describe().type });
     }
     logs.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
     const page = logs.slice(0, size);
