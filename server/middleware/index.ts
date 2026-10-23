@@ -18,6 +18,7 @@ import { readEnv } from '../../lib/envCompat.js';
 import { storageClientMiddleware } from './storageClient.js';
 import { apiKeyAuth } from './apiKeyAuth.js';
 import { makeSpaFallbackMiddleware } from './spaFallback.js';
+import { rejectBrotliRequestBodies } from './rejectBrotliBodies.js';
 export { makeSpaFallbackMiddleware, ASSET_EXT_RE } from './spaFallback.js';
 
 // Get directory of this file for resolving paths relative to package location
@@ -44,6 +45,10 @@ function setupCors(app: Express): void {
  * Setup JSON body parser
  */
 function setupJsonParser(app: Express): void {
+  // CVE-2026-111497 defence-in-depth: refuse `Content-Encoding: br` BEFORE
+  // body-parser gets a chance to pipe the body through the (vulnerable on
+  // unpatched Node) brotli decoder. See ./rejectBrotliBodies.ts.
+  app.use(rejectBrotliRequestBodies);
   app.use(express.json({ limit: '10mb' }));
 
   // Regression guard (API KPI probe finding): a malformed JSON body (e.g.

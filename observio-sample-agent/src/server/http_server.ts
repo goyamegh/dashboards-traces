@@ -16,6 +16,7 @@ import { AGUIAuditLogger } from '../utils/ag_ui_audit_logger';
 import { BaseAGUIAdapter, BaseAGUIConfig } from '../ag_ui/base_ag_ui_adapter';
 import { ModelConfigManager } from '../config/model_config';
 import { LLMRequestLogger } from '../utils/llm_request_logger';
+import { rejectBrotliRequestBodies } from './reject_brotli_bodies';
 
 export class HTTPServer {
   private app: express.Application;
@@ -52,6 +53,10 @@ export class HTTPServer {
     } else {
       this.app.use(cors());
     }
+
+    // CVE-2026-111497 defence-in-depth: refuse `Content-Encoding: br` BEFORE
+    // body-parser can pipe the body through the brotli decoder.
+    this.app.use(rejectBrotliRequestBodies);
 
     // JSON parsing
     this.app.use(express.json({ limit: '10mb' }));
