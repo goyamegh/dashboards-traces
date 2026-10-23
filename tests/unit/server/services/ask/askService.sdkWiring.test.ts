@@ -372,6 +372,32 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 
+  it('an abort that lands while the snapshot is still being built releases the concurrency slot (no permanent 429)', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    mockConfig.mockReturnValue({ assistant: { maxConcurrent: 1 } });
+    const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    // a slow storage read: the client gives up (closes the SSE) before the first byte
+    let releaseStorage: (() => void) | null = null;
+    getById.mockImplementationOnce(() => new Promise((r) => { releaseStorage = () => r({ id: 'report-1', testCaseId: 'tc-1', trajectory: [] }); }));
+    const prompt = jest.fn(async () => {});
+    createAgentSession.mockImplementationOnce(async () => ({ session: { prompt, subscribe: jest.fn(() => () => {}), messages: [] } }));
+    const events: string[] = [];
+    const handle = streamAsk({ question: 'q', pageContext: { route: '/runs/report-1' } }, {
+      onMeta: () => events.push('meta'), onDelta: () => events.push('delta'), onTool: () => {}, onDone: () => events.push('done'), onError: (e: string) => events.push('error:' + e),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    handle.abort();
+    (releaseStorage as unknown as () => void)();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(prompt).not.toHaveBeenCalled(); // the model was never invoked for an abandoned question
+    expect(events).toEqual([]); // nothing reaches a client that left
+    expect(askInFlight()).toBe(0); // the slot is free again …
+    const next = await ask(streamAsk, { question: 'next', pageContext: { route: '/' } });
+    expect(next.answer).toBe('the answer'); // … so the next question is answered, not 429'd
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
   it('model selection: a provider-qualified or bare modelId pins the model, an unknown pin falls back to the newest Claude, and an empty registry is an error', async () => {
     process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
     const sdk = require('@earendil-works/pi-coding-agent');

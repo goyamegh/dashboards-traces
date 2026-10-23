@@ -437,12 +437,17 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
       ls.snapshot = undefined;
       const refs = snapshot?.refs ?? resolveAskRefs(req.pageContext);
       const turnId = `turn-${Date.now().toString(36)}`;
+      if (signal.aborted) {
+        // The client left while the snapshot was being built: release the
+        // concurrency slot (it was already counted) and never invoke the model.
+        answering -= 1; counted = false; ls.busy = false;
+        return;
+      }
       cb.onMeta({
         sessionId: ls.id, turnId,
         agent: { ...ASK_AGENT, model: ls.model },
         refs, loaded: snapshot?.loaded ?? [], prepared,
       });
-      if (signal.aborted) { ls.busy = false; return; }
 
       const userPrompt = buildAskUserPrompt({
         question: req.question,
