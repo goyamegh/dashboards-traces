@@ -44,6 +44,10 @@ export const getObservabilityConfigFromFile = jest.fn().mockReturnValue(null);
 export const setTsClusterConfig = jest.fn();
 export const getStorageConfigFromTs = jest.fn().mockReturnValue(null);
 export const getObservabilityConfigFromTs = jest.fn().mockReturnValue(null);
+export const getObservabilitySourcesFromTs = jest.fn().mockReturnValue([]);
+export const getObservabilitySourcesFromFile = jest.fn().mockReturnValue([]);
+export const saveObservabilitySource = jest.fn();
+export const deleteObservabilitySource = jest.fn().mockReturnValue(true);
 export const __resetTsClusterConfigForTests = jest.fn();
 
 export const saveObservabilityConfig = jest.fn();

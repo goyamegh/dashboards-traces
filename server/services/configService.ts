@@ -29,7 +29,7 @@ import {
   userStatePath,
 } from '@/lib/config/statePaths';
 import { getEvalRootsStatus, type EvalRootsStatus } from '@/lib/config/evalRoots';
-import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
+import type { StorageClusterConfig, ObservabilityClusterConfig, ObservabilitySourceConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
 import { isObservabilityConfigPresent } from '../../types/index.js';
 
 // Type for the config file sections owned by this module
@@ -45,6 +45,7 @@ interface ConfigFileDataSources {
     tlsSkipVerify?: boolean;
   };
   observability?: ObservabilityClusterConfig;
+  observabilitySources?: ObservabilitySourceConfig[];
 }
 
 // Config status returned to frontend (no raw credentials — username is safe to expose,
@@ -90,6 +91,22 @@ export interface ConfigStatus {
       traces?: string;
       logs?: string;
     };
+    /** Additional sources (the primary above is implicitly first). No secrets. */
+    sources?: Array<{
+      id: string;
+      name?: string;
+      source: ConfigSource;
+      type: ObservabilityBackendType;
+      endpoint?: string;
+      authType?: ClusterAuthType;
+      username?: string;
+      hasPassword?: boolean;
+      awsProfile?: string;
+      awsRegion?: string;
+      awsService?: 'es' | 'aoss';
+      indexes?: { traces?: string; logs?: string; metrics?: string };
+      logGroups?: { traces?: string; logs?: string };
+    }>;
   };
   runtime?: {
     storage: {
@@ -120,6 +137,7 @@ export interface ConfigStatus {
 
 let tsStorageConfig: StorageClusterConfig | null = null;
 let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
+let tsObservabilitySources: ObservabilitySourceConfig[] = [];
 
 /**
  * Register cluster config authored in agent-health.config.ts.
@@ -130,6 +148,7 @@ let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
 export function setTsClusterConfig(opts: {
   storage?: StorageClusterConfig | null;
   observability?: ObservabilityClusterConfig | null;
+  observabilitySources?: ObservabilitySourceConfig[] | null;
 }): void {
   if (opts.storage !== undefined) {
     tsStorageConfig = opts.storage && opts.storage.endpoint ? opts.storage : null;
@@ -137,6 +156,14 @@ export function setTsClusterConfig(opts: {
   if (opts.observability !== undefined) {
     tsObservabilityConfig = isObservabilityConfigPresent(opts.observability) ? opts.observability : null;
   }
+  if (opts.observabilitySources !== undefined) {
+    tsObservabilitySources = (opts.observabilitySources ?? []).filter((s) => s && s.id && isObservabilityConfigPresent(s));
+  }
+}
+
+/** Additional observability sources authored in agent-health.config.ts (may be empty). */
+export function getObservabilitySourcesFromTs(): ObservabilitySourceConfig[] {
+  return tsObservabilitySources;
 }
 
 /** Storage cluster config authored in agent-health.config.ts, or null. */
@@ -153,6 +180,7 @@ export function getObservabilityConfigFromTs(): ObservabilityClusterConfig | nul
 export function __resetTsClusterConfigForTests(): void {
   tsStorageConfig = null;
   tsObservabilityConfig = null;
+  tsObservabilitySources = [];
 }
 
 /**
@@ -263,6 +291,45 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
   };
 }
 
+/** Additional observability sources from the runtime state file (ui-first). */
+export function getObservabilitySourcesFromFile(): ObservabilitySourceConfig[] {
+  const config = readConfigFromDisk() as ConfigFileDataSources;
+  return (config?.observabilitySources ?? []).filter((s) => s && s.id && isObservabilityConfigPresent(s));
+}
+
+/** Upsert one additional observability source (by id) in the project state file. */
+export function saveObservabilitySource(source: ObservabilitySourceConfig): void {
+  const existing = ((readStateScope('project').observabilitySources as ObservabilitySourceConfig[] | undefined) ?? []);
+  const prev = existing.find((s) => s.id === source.id);
+  const isCloudWatch = source.type === 'cloudwatch';
+  const next: ObservabilitySourceConfig = {
+    id: source.id,
+    ...(source.name && { name: source.name }),
+    type: source.type ?? 'opensearch',
+    ...(source.endpoint && { endpoint: source.endpoint }),
+    ...(source.authType && { authType: source.authType }),
+    ...(!isCloudWatch && (source.username ?? prev?.username) && { username: source.username ?? prev?.username }),
+    ...(!isCloudWatch && (source.password ?? prev?.password) && { password: source.password ?? prev?.password }),
+    ...(source.awsProfile && { awsProfile: source.awsProfile }),
+    ...(source.awsRegion && { awsRegion: source.awsRegion }),
+    ...(source.awsService && { awsService: source.awsService }),
+    ...(source.tlsSkipVerify !== undefined && { tlsSkipVerify: source.tlsSkipVerify }),
+    ...(source.indexes && Object.keys(source.indexes).length > 0 && { indexes: source.indexes }),
+    ...(source.logGroups && Object.keys(source.logGroups).length > 0 && { logGroups: source.logGroups }),
+  };
+  const sources = prev ? existing.map((s) => (s.id === source.id ? next : s)) : [...existing, next];
+  writeStateScope({ observabilitySources: sources }, 'project');
+}
+
+/** Remove one additional observability source (by id) from the project state file. */
+export function deleteObservabilitySource(id: string): boolean {
+  const existing = ((readStateScope('project').observabilitySources as ObservabilitySourceConfig[] | undefined) ?? []);
+  const next = existing.filter((s) => s.id !== id);
+  if (next.length === existing.length) return false;
+  writeStateScope({ observabilitySources: next.length ? next : undefined }, 'project');
+  return true;
+}
+
 /**
  * Save observability configuration to file
  */
@@ -274,13 +341,16 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
   const resolvedUsername = obsConfig.username ?? existingObs.username;
   const resolvedPassword = obsConfig.password ?? existingObs.password;
 
+  // Credentials are only ever carried over within the OpenSearch backend —
+  // switching to CloudWatch drops any stored basic-auth secret.
+  const isCloudWatch = obsConfig.type === 'cloudwatch';
   const observability = {
     ...(obsConfig.type && { type: obsConfig.type }),
     ...(obsConfig.endpoint && { endpoint: obsConfig.endpoint }),
     ...(obsConfig.logGroups && Object.keys(obsConfig.logGroups).length > 0 && { logGroups: obsConfig.logGroups }),
     ...(obsConfig.authType && { authType: obsConfig.authType }),
-    ...(resolvedUsername && { username: resolvedUsername }),
-    ...(resolvedPassword && { password: resolvedPassword }),
+    ...(!isCloudWatch && resolvedUsername && { username: resolvedUsername }),
+    ...(!isCloudWatch && resolvedPassword && { password: resolvedPassword }),
     ...(obsConfig.awsProfile && { awsProfile: obsConfig.awsProfile }),
     ...(obsConfig.awsRegion && { awsRegion: obsConfig.awsRegion }),
     ...(obsConfig.awsService && { awsService: obsConfig.awsService }),
@@ -431,6 +501,24 @@ export function getConfigStatus(agents?: any[]): ConfigStatus {
       awsService: activeObs.awsService,
       indexes: obsIndexes,
       logGroups: activeObs.logGroups,
+      sources: [
+        ...tsObservabilitySources.map((src) => ({ src, source: 'typescript' as ConfigSource })),
+        ...(config?.observabilitySources ?? []).filter((src) => src && src.id && isObservabilityConfigPresent(src)).map((src) => ({ src, source: 'file' as ConfigSource })),
+      ].map(({ src, source }) => ({
+        id: src.id,
+        name: src.name,
+        source,
+        type: (src.type === 'cloudwatch' ? 'cloudwatch' : 'opensearch') as ObservabilityBackendType,
+        endpoint: src.endpoint,
+        authType: src.authType,
+        username: src.username,
+        hasPassword: Boolean(src.password),
+        awsProfile: src.awsProfile,
+        awsRegion: src.awsRegion,
+        awsService: src.awsService,
+        indexes: src.indexes,
+        logGroups: src.logGroups,
+      })),
     },
     runtime: {
       storage: {

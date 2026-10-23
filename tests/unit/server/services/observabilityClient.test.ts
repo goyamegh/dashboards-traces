@@ -7,6 +7,7 @@
 
 jest.mock('@/server/middleware/dataSourceConfig', () => ({
   resolveObservabilityConfig: jest.fn(),
+  resolveObservabilitySources: jest.fn(),
   DEFAULT_OTEL_INDEXES: { traces: 'otel-v1-apm-span-*', logs: 'ml-commons-logs-*', metrics: 'otel-v1-apm-service-map*' },
 }));
 jest.mock('@/server/services/opensearchClientFactory', () => ({
@@ -15,7 +16,7 @@ jest.mock('@/server/services/opensearchClientFactory', () => ({
   resolveSigv4Credentials: jest.fn(),
 }));
 
-import { resolveObservabilityConfig } from '@/server/middleware/dataSourceConfig';
+import { resolveObservabilityConfig, resolveObservabilitySources } from '@/server/middleware/dataSourceConfig';
 import {
   getObservabilityModule,
   createObservabilityModule,
@@ -24,11 +25,17 @@ import {
 } from '@/server/services/observabilityClient';
 
 const mockResolve = resolveObservabilityConfig as jest.Mock;
+const mockSources = resolveObservabilitySources as jest.Mock;
 const req = {} as any;
 
 beforeEach(() => {
   jest.clearAllMocks();
   __resetObservabilityCachesForTests();
+  // By default the sources list mirrors the single primary config.
+  mockSources.mockImplementation(() => {
+    const c = mockResolve();
+    return c ? [{ ...c, id: 'primary', name: 'primary' }] : [];
+  });
 });
 
 describe('getObservabilityModule', () => {
@@ -53,6 +60,17 @@ describe('getObservabilityModule', () => {
     mockResolve.mockReturnValue({ ...cfg, awsProfile: 'other' });
     expect(getObservabilityModule(req)).not.toBe(a);
     expect(cloudWatchCacheKey(cfg as any)).toBe('cloudwatch|us-east-1|p|aws/spans|/agent-health/{service.name}');
+  });
+});
+
+describe('getObservabilityModule with several sources', () => {
+  it('returns a composite over every source, in order', () => {
+    mockSources.mockReturnValue([
+      { id: 'primary', name: 'primary', endpoint: 'https://mine.example', indexes: { traces: 'tr-*' } },
+      { id: 'cw', name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1', logGroups: { traces: 'aws/spans', logs: '/agent-health/{service.name}' } },
+    ]);
+    const mod = getObservabilityModule(req);
+    expect(mod.describe()).toEqual({ type: 'composite', target: 'primary (opensearch) + Team CloudWatch (cloudwatch)' });
   });
 });
 

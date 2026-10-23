@@ -339,6 +339,33 @@ Settings → Observability shows the active CloudWatch backend (region, profile,
 log groups) read-only, with a Test Connection that verifies credentials, that
 `aws/spans` exists, and that at least one per-agent log group is present.
 
+### Several observability sources at once
+
+Read more than one source side by side — e.g. your own OpenSearch cluster
+**and** a team CloudWatch account. `observability` stays the primary source;
+add the others under `observabilitySources` (same fields as `observability`,
+plus `id` and a display `name`):
+
+```ts
+observability: { endpoint: 'https://my-cluster…', authType: 'sigv4', awsRegion: 'us-east-1' },
+observabilitySources: [
+  { id: 'team-cloudwatch', name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default' },
+],
+```
+
+How the sources combine:
+
+| Surface | Behaviour |
+|---|---|
+| Traces, logs | Every source is queried; results are merged into one list, newest first, deduped by span id (an agent that ships to both appears once — the first configured source wins). Each span carries `agent_health.source = <name>`. A source that fails is named in a warning; the others still answer. |
+| Metrics | Taken from the **first** source (configured order) that holds the run's spans — never summed across sources, so dual-shipping is not double-counted. A source error is surfaced only when no source found spans. |
+| Health / Settings | Settings → Observability Data Sources lists every source as a `Type → fields` form (OpenSearch: endpoint, auth, indexes; CloudWatch: region, profile, log groups) with Test Connection / Save / Remove and a per-source health badge; `GET /api/observability/sources/health` returns one entry per source. |
+
+In ui-first mode the Settings card writes additional sources to
+`.agent-health/state.json` (`PUT`/`DELETE /api/storage/config/observability/sources/:id`);
+in code-first mode (an `agent-health.config.ts` is present) the card is
+read-only and the state file is ignored, exactly as for the primary.
+
 ### Agent Endpoints (Optional)
 
 Override default agent endpoints.

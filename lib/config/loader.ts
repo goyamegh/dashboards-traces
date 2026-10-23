@@ -195,6 +195,7 @@ function mergeConfigs(
     // resolves it against JSON/env at startup (see resolveStorageConfig).
     storage: userConfig.storage,
     observability: userConfig.observability,
+    observabilitySources: userConfig.observabilitySources,
     evalRoots: userConfig.evalRoots,
   };
 }
@@ -306,6 +307,7 @@ export function loadConfigSync(cwd: string = process.cwd()): ResolvedConfig {
     telemetry: {},
     storage: undefined,
     observability: undefined,
+    observabilitySources: undefined,
     evalRoots: undefined,
   };
 }

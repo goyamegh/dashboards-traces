@@ -12,7 +12,8 @@
 
 import { Router, Request, Response } from 'express';
 import { testObservabilityConnection, checkObservabilityHealth } from '../adapters/index.js';
-import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { resolveObservabilityConfig, resolveObservabilitySources, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createObservabilityModule } from '../services/observabilityClient.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../types/index.js';
 import { getObservabilityConfigFromFile, getObservabilityConfigFromTs } from '../services/configService.js';
 
@@ -35,6 +36,29 @@ router.get('/api/observability/health', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[ObservabilityAPI] Health check failed:', error.message);
     res.json({ status: 'error', error: error.message });
+  }
+});
+
+/**
+ * GET /api/observability/sources/health — one health entry per configured
+ * source (primary first), for the Settings card.
+ */
+router.get('/api/observability/sources/health', async (req: Request, res: Response) => {
+  try {
+    const sources = resolveObservabilitySources(req);
+    const results = await Promise.all(
+      sources.map(async (src) => {
+        try {
+          const health = await createObservabilityModule(src).health();
+          return { id: src.id, name: src.name, type: src.type ?? 'opensearch', health };
+        } catch (e: any) {
+          return { id: src.id, name: src.name, type: src.type ?? 'opensearch', health: { status: 'error', error: e.message } };
+        }
+      })
+    );
+    res.json({ sources: results });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 

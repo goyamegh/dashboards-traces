@@ -70,7 +70,13 @@ router.post('/api/logs', async (req: Request, res: Response) => {
     }
 
     const result = await obs.logs.query({ runId, traceId, serviceName, query, startTime, endTime, size });
-    res.json({ logs: result.logs, total: result.total, backend: obs.describe().type, ...(result.truncated ? { truncated: true } : {}) });
+    res.json({
+      logs: result.logs,
+      total: result.total,
+      backend: obs.describe().type,
+      ...(result.truncated ? { truncated: true } : {}),
+      ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+    });
   } catch (error: any) {
     console.error('[LogsAPI] Error:', error);
     res.status(500).json({ error: `Logs fetch failed: ${error.message}` });
