@@ -66,6 +66,8 @@ export interface FilterEventsResult {
    * `nextToken`. Either way the caller must not present the result as whole.
    */
   complete: boolean;
+  /** FilterLogEvents pages read. */
+  pages: number;
 }
 
 export interface InsightsResult {
@@ -157,7 +159,7 @@ export class CloudWatchReader implements ICloudWatchReader {
     // Complete only when CloudWatch itself said there is nothing more: a
     // remaining nextToken means unscanned data, whether we stopped for the
     // page budget or because the caller's row limit filled up.
-    return { events: out, complete: !nextToken };
+    return { events: out, complete: !nextToken, pages };
   }
 
   async insights(opts: { logGroups: string[]; query: string; startMs: number; endMs: number; limit?: number }): Promise<InsightsResult> {

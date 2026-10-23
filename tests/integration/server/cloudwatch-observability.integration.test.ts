@@ -37,6 +37,8 @@ let authFailure: Error | null = null;
 let capScan = false;
 /** Insights ingestion lag emulated by the fake (0 = fully indexed). */
 let insightsLagMs = 0;
+/** When set, every FilterLogEvents call is throttled. */
+let throttleFilter = false;
 function recordMs(message: string): number | undefined {
   try {
     const n = JSON.parse(message)?.startTimeUnixNano;
@@ -55,6 +57,7 @@ function fakeSend(command: any): any {
     return { logGroups: names.map((n) => ({ logGroupName: n })) };
   }
   if (command instanceof FilterLogEventsCommand) {
+    if (throttleFilter) throw Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
     const msgs = groups[input.logGroupName];
     if (!msgs) throw Object.assign(new Error('The specified log group does not exist.'), { name: 'ResourceNotFoundException' });
     const m = /\{ \$\.traceId = "([0-9a-f]+)" \}/.exec(input.filterPattern || '');
@@ -133,6 +136,7 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     authFailure = null;
     capScan = false;
     insightsLagMs = 0;
+    throttleFilter = false;
     groups['aws/spans'] = (spanFixture as any[]).map((r) => JSON.stringify(r));
     __resetObservabilityCachesForTests();
   });
@@ -147,9 +151,12 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     expect(root).toMatchObject({ traceId: TRACE, parentSpanId: 'b7ad6b7169203331', name: 'POST /invoke', status: 'OK', duration: 11442 });
     expect(root.attributes['service.name']).toBe(SERVICE);
     expect(root.attributes['agent_health.run.id']).toBe(RUN);
-    const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
-    expect(filter.input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `"${TRACE}"` });
-    expect(filter.input.endTime - filter.input.startTime).toBe(20 * 60 * 1000); // the fresh slice, not the 7-day lookback
+    const filters = sent.filter((c) => c instanceof FilterLogEventsCommand);
+    expect(filters[0].input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `"${TRACE}"` });
+    // the fresh slice (newest 20 min, read in 5-min partitions newest first), not the 7-day lookback
+    expect(filters).toHaveLength(4);
+    expect(filters.map((c) => c.input.endTime)).toEqual([...filters.map((c) => c.input.endTime)].sort((a, b) => b - a));
+    expect(Math.max(...filters.map((c) => c.input.endTime)) - Math.min(...filters.map((c) => c.input.startTime))).toBe(20 * 60 * 1000);
     const start = sent.find((c) => c instanceof StartQueryCommand);
     expect(start.input.queryString).toContain(`traceId = "${TRACE}"`);
     expect(start.input.endTime - start.input.startTime).toBeGreaterThanOrEqual(7 * 86_400); // seconds (floor/ceil); the lookback
@@ -265,15 +272,24 @@ describe('CloudWatch observability backend (HTTP integration)', () => {
     }
   });
 
-  it('a bounded term scan stopping early is not partial — Insights covers the window — and the result is complete', async () => {
+  it('a fresh scan that exhausts its page budget is surfaced as a partial-results warning on /api/traces and partial metrics — the data still comes from Insights', async () => {
     capScan = true;
     const traces = await request(app).post('/api/traces').send({ traceId: TRACE });
     expect(traces.status).toBe(200);
     expect(traces.body.total).toBe(12);
-    expect(traces.body.warning).toBeUndefined();
+    expect(traces.body.warning).toMatch(/partial/i);
     const metrics = await request(app).get(`/api/metrics/${RUN}`);
-    expect(metrics.body).toMatchObject({ runId: RUN, inputTokens: 42952 });
-    expect(metrics.body.partial).toBeUndefined();
+    expect(metrics.body).toMatchObject({ runId: RUN, inputTokens: 42952, partial: true });
+  });
+
+  it('a throttled FilterLogEvents does not fail the request: Insights answers, flagged partial', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    throttleFilter = true;
+    const traces = await request(app).post('/api/traces').send({ traceId: TRACE });
+    expect(traces.status).toBe(200);
+    expect(traces.body.total).toBe(12);
+    expect(traces.body.warning).toMatch(/partial/i);
+    warn.mockRestore();
   });
 
   it('a 60-day /api/traces range is answered from the newest 30 days WITH a partial warning (documented bound)', async () => {

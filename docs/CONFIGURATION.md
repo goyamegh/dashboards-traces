@@ -285,14 +285,26 @@ seconds even on a multi-GB `aws/spans`; the only path for service-name +
 time-window correlation and free-text search) and a `FilterLogEvents` term scan
 for the exact ids (trace id, run ids, session ids) over the newest 20 minutes
 of the window only — Insights indexes `aws/spans` with a lag of minutes, and
-that scan is what makes a span visible seconds after ingestion. The scan is
-bounded to 10 pages so a busy account's group can never turn it into a linear
-read (an earlier exact-first design scanned up to 50 MB before consulting
-Insights: a trace lookup on a 15 GB `aws/spans` took 45 s; it now takes the
-Insights query's few seconds). A trace-id lookup in an application log group
-likewise scans only the trace's own window (±5 min, derived from its spans),
-falling back to a 24-hour lookback (`logsLookbackMs`) when the trace is not in
-that source. Every query is bounded, and a result that hit a bound is reported as partial
+that scan is what makes a span visible seconds after ingestion (`aws/spans`
+records are stamped with the span's **end** time, so a long-running span that
+just finished is in the slice too). The scan reads the slice in 5-minute
+partitions, newest first, with a budget of 10 pages, so a busy account's group
+can never turn it into a linear read — and if the budget runs out before the
+slice is read, the result is marked partial rather than presented as whole (an
+earlier exact-first design scanned up to 50 MB before consulting Insights: a
+trace lookup on a 15 GB `aws/spans` took 45 s; it now takes the Insights
+query's few seconds). If one of the two paths fails (throttled, timed out) the
+other still answers and the result is marked partial; only both failing is an
+error. Batch metrics run the exact ids first (fresh slice ∥ Insights over the
+lookback) and then one Insights query for the service-name windows of only
+those runs the ids did not find an agent span for, over those runs' own
+windows — so a busy service's window spans cannot crowd another run's exact
+matches out of the 10,000-row result. A trace-id lookup in an application log
+group scans only the trace's own window (±5 min, derived from its complete
+span set), falling back to a 24-hour lookback (`logsLookbackMs`) when the
+trace is not in that source or was itself partial; log lines that carry a
+different trace id are dropped, lines without one that mention the id are
+kept. Every query is bounded, and a result that hit a bound is reported as partial
 (the Traces tab shows a "results are partial" warning; metrics carry
 `partial: true`) rather than presented as the whole picture:
 
@@ -301,7 +313,7 @@ that source. Every query is bounded, and a result that hit a bound is reported a
 | Scan window for id-only requests with no run window | 7 days (`lookbackMs`) | request time → back |
 | Scan window when the request carries the run's window | the run window ± 5 min | run-report Traces tab |
 | Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest 30 days are scanned and the result is marked partial (Traces tab warning / `truncated` on logs / `partial` on metrics) |
-| FilterLogEvents slice for exact ids in `aws/spans` | newest 20 min of the window, ≤ 10 pages (≈ 10 MB) | the Insights query covers the rest; stopping early is not partial |
+| FilterLogEvents slice for exact ids in `aws/spans` | newest 20 min of the window, 5-min partitions newest first, ≤ 10 pages (≈ 10 MB) | the Insights query covers the rest; an exhausted budget is partial |
 | FilterLogEvents pages per application-log-group scan | 50 (≈ 50 MB) | partial beyond |
 | Trace-id lookup in application log groups | the trace's window ± 5 min, else 24 h (`logsLookbackMs`) | |
 | Rows per query (both paths) | 10,000 | partial beyond |
