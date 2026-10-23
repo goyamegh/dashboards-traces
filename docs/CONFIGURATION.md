@@ -250,9 +250,10 @@ cluster. Agents export OTLP to the X-Ray OTLP endpoint
 (`https://xray.<region>.amazonaws.com/v1/traces`); with
 [CloudWatch Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Transaction-Search.html)
 enabled every span lands as a structured record in the `aws/spans` log group,
-which Agent Health reads with `FilterLogEvents` (single-trace lookups) and
-Logs Insights (multi-strategy correlation and search). Application logs are read
-from one log group per agent, named after the agent's OTel `service.name`.
+which Agent Health reads with Logs Insights (indexed; correlation and search)
+plus a short `FilterLogEvents` scan of the newest minutes (spans Insights has
+not indexed yet). Application logs are read from one log group per agent, named
+after the agent's OTel `service.name`.
 
 ```ts
 // agent-health.config.ts — the whole change for an existing OpenSearch user
@@ -278,11 +279,20 @@ OpenSearch reader: agents should adopt the incoming `traceparent`, and may stamp
 the `agent_health.run.id` W3C **baggage** entry Agent Health sends alongside it
 as a span attribute (see "What Agent Health sends to your agent" below).
 
-**How it reads, and its bounds.** Exact ids (trace id, run ids, session ids)
-are looked up with `FilterLogEvents`, which sees a span within seconds of
-ingestion; Logs Insights — which indexes `aws/spans` with a lag of minutes —
-is used only for service-name + time-window correlation and free-text search.
-Every query is bounded, and a result that hit a bound is reported as partial
+**How it reads, and its bounds.** Every request runs two reads in parallel and
+unions them: a Logs Insights query over the whole window (indexed, so it costs
+seconds even on a multi-GB `aws/spans`; the only path for service-name +
+time-window correlation and free-text search) and a `FilterLogEvents` term scan
+for the exact ids (trace id, run ids, session ids) over the newest 20 minutes
+of the window only — Insights indexes `aws/spans` with a lag of minutes, and
+that scan is what makes a span visible seconds after ingestion. The scan is
+bounded to 10 pages so a busy account's group can never turn it into a linear
+read (an earlier exact-first design scanned up to 50 MB before consulting
+Insights: a trace lookup on a 15 GB `aws/spans` took 45 s; it now takes the
+Insights query's few seconds). A trace-id lookup in an application log group
+likewise scans only the trace's own window (±5 min, derived from its spans),
+falling back to a 24-hour lookback (`logsLookbackMs`) when the trace is not in
+that source. Every query is bounded, and a result that hit a bound is reported as partial
 (the Traces tab shows a "results are partial" warning; metrics carry
 `partial: true`) rather than presented as the whole picture:
 
@@ -291,7 +301,9 @@ Every query is bounded, and a result that hit a bound is reported as partial
 | Scan window for id-only requests with no run window | 7 days (`lookbackMs`) | request time → back |
 | Scan window when the request carries the run's window | the run window ± 5 min | run-report Traces tab |
 | Hard cap on any window, explicit or derived | 30 days (`maxWindowMs`) | newest 30 days are scanned and the result is marked partial (Traces tab warning / `truncated` on logs / `partial` on metrics) |
-| FilterLogEvents pages per scan | 50 (≈ 50 MB) | then Insights fallback / partial |
+| FilterLogEvents slice for exact ids in `aws/spans` | newest 20 min of the window, ≤ 10 pages (≈ 10 MB) | the Insights query covers the rest; stopping early is not partial |
+| FilterLogEvents pages per application-log-group scan | 50 (≈ 50 MB) | partial beyond |
+| Trace-id lookup in application log groups | the trace's window ± 5 min, else 24 h (`logsLookbackMs`) | |
 | Rows per query (both paths) | 10,000 | partial beyond |
 | Concurrent AWS calls per backend instance | 4 | queued |
 | Log groups discovered for logs without a service name | 20 | partial beyond |
