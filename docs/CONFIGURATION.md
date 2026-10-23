@@ -416,6 +416,56 @@ Debug logging can also be toggled at runtime via the Settings page "Verbose Logg
 | `AGENT_HEALTH_EVAL_ROOTS` | Path-delimiter-separated directories a relative code-SDK `sourceFile` is resolved against (see [`evalRoots`](#where-the-server-looks-for-eval-source-files-evalroots)) | server cwd |
 | `BEDROCK_MODEL_ID` | Judge model ID | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
 
+## The built-in assistant (`assistant`)
+
+Highlight any text in the web UI (a judge rationale, a trace row, a test-case
+output, a compare cell) and click **Ask**: the answer streams in a popover next
+to the selection; "Open in panel" continues the thread in a docked panel that
+also lists earlier threads. Nothing to install: the assistant is part of Agent
+Health — it runs pi's agent loop **in-process** through the pi SDK (the
+`@earendil-works/pi-coding-agent` optional dependency that `npm install` brings
+in; the pi CLI is not needed) with a fixed list of **read-only** tools over this
+server's own API (`get_report`, `get_evaluation_run`, `get_test_case`,
+`get_benchmark`, `query_spans`). It has no shell, no file access and no MCP
+servers.
+
+**Credentials.** The assistant uses whatever model pi's registry can reach with
+the credentials the server already has: with AWS credentials for Bedrock
+(`AWS_PROFILE` / keys — the same ones the LLM judge needs) it works out of the
+box and picks the newest credentialed Claude. A `~/.pi/agent/` setup is honoured
+when present but not required. Without any credentialed model the first
+question answers with a clear error.
+
+**Threads are pi sessions, stored locally.** Each thread is a standard pi
+session file (pi JSONL) under `.agent-health/ask-sessions/` on **this** server —
+not in the shared storage cluster, and not in `~/.pi/agent/sessions/` (so they
+don't appear in your pi sidebar). The panel's history is therefore per server;
+another laptop or server has its own list. A follow-up re-opens the file, so
+threads survive a restart.
+
+```ts
+export default {
+  assistant: {
+    enabled: true,                                   // false: no chip, no panel, /api/ask → 404
+    model: 'us.anthropic.claude-sonnet-4-6',         // pin the LLM (bare or provider-qualified id); default: newest credentialed Claude
+    sessionsDir: '.agent-health/ask-sessions',       // pi session files; relative to the server cwd
+    maxConcurrent: 4,                                // questions answered at once; extra requests get 429
+  },
+};
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AH_ASK_MODEL_ID` | Pin the assistant's LLM (overrides `assistant.model`) | newest credentialed Claude |
+| `AH_ASK_SESSIONS_DIR` | Directory for the pi session files (overrides `assistant.sessionsDir`) | `.agent-health/ask-sessions` |
+
+`/api/ask*` sits behind the same (absent) authentication as the rest of the
+REST API — it exposes no data the API doesn't already expose, but every
+question is an LLM call, so it is rate-limited per client (20 questions and 60
+prepares per minute) and capped by `maxConcurrent`. Put the server behind your
+deployment's authentication like the rest of Agent Health, or set
+`assistant.enabled: false`.
+
 ## Where the server looks for eval source files (`evalRoots`)
 
 Code-SDK test cases imported from an `.eval.js` / `.eval.ts` / `.eval.mjs`
