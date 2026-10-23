@@ -10,6 +10,7 @@ import {
   FRESH_SCAN_MS,
   FRESH_SCAN_PAGES,
   FRESH_SCAN_PARTITION_MS,
+  dedupeSources,
   DEFAULT_MAX_WINDOW_MS,
   buildTracesInsightsQuery,
   idTermsFilterPattern,
@@ -183,7 +184,12 @@ describe('recordMappers', () => {
     const e = cloudWatchLogToEntry(line, undefined, 'g');
     expect(e).toMatchObject({ message: 'tool call: name=search_index', level: 'info', source: 'demo-agent', traceId: 'f'.repeat(32), spanId: 'a1b2c3d4e5f60718', timestamp: '2026-10-23T01:47:54.473Z' });
     const log4j = cloudWatchLogToEntry(JSON.stringify({ timestamp: '2026-10-23T02:07:19,042', level: 'WARN', message: 'refresh failed' }), undefined, 'g');
-    expect(log4j).toMatchObject({ level: 'warn', message: 'refresh failed', timestamp: '2026-10-23T02:07:19.042Z' });
+    expect(log4j).toMatchObject({ level: 'warn', message: 'refresh failed', timestamp: '2026-10-23T02:07:19.042Z' }); // no zone → UTC, never host-local
+    // numeric timestamps: unit inferred by magnitude; garbage falls back to the CloudWatch event time
+    expect(cloudWatchLogToEntry(JSON.stringify({ timestamp: 1792102039, message: 's' }), 1, 'g').timestamp).toBe('2026-10-15T22:07:19.000Z');
+    expect(cloudWatchLogToEntry(JSON.stringify({ timestamp: 1792102039042, message: 'ms' }), 1, 'g').timestamp).toBe('2026-10-15T22:07:19.042Z');
+    expect(cloudWatchLogToEntry(JSON.stringify({ timestamp: 1792102039042000000, message: 'ns' }), 1, 'g').timestamp).toMatch(/^2026-10-15T22:07:19\.04[12]Z$/); // float precision at 1e18
+    expect(cloudWatchLogToEntry(JSON.stringify({ timestamp: 1e300, message: 'junk' }), 1000, 'g').timestamp).toBe('1970-01-01T00:00:01.000Z');
   });
 
   it('resolves the per-service log-group template', () => {
@@ -239,6 +245,12 @@ describe('Logs Insights query builder', () => {
     const q = buildTracesInsightsQuery({ runIds: [RUN], traceIds: ['a'.repeat(32), 'b'.repeat(32)], sessionIds: ['s1', 's2'] }, true);
     expect(q).toContain(`traceId in ["${'a'.repeat(32)}", "${'b'.repeat(32)}"]`);
     expect(q).toContain('`attributes.session.id` in ["s1", "s2"]');
+  });
+
+  it('dedupes on (traceId, spanId), not spanId alone', () => {
+    const a = { traceId: 'a'.repeat(32), spanId: 's1' } as any;
+    const b = { traceId: 'b'.repeat(32), spanId: 's1' } as any;
+    expect(dedupeSources([a, b, { ...a }, { spanId: undefined } as any])).toHaveLength(3);
   });
 
   it('builds a time-only browse query', () => {
