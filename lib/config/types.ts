@@ -15,6 +15,7 @@ import type {
   AgentHooks,
   StorageClusterConfig,
   ObservabilityClusterConfig,
+  ObservabilitySourceConfig,
 } from '@/types/index.js';
 import type { AgentConnector } from '@/services/connectors/types.js';
 
@@ -219,6 +220,15 @@ export interface UserConfig {
   observability?: ObservabilityClusterConfig;
 
   /**
+   * Several observability sources read together — e.g. your own OpenSearch
+   * cluster AND a CloudWatch account. Traces/logs are merged into one view
+   * (each span tagged `agent_health.source`); metrics come from the first
+   * source holding a run's spans. `observability` (single source) is kept
+   * for backward compatibility and is treated as the first source.
+   */
+  observabilitySources?: ObservabilitySourceConfig[];
+
+  /**
    * Directories the server resolves a code-SDK test case's relative
    * `sourceFile` against (first hit wins). Lets one server run eval suites
    * that live outside its own cwd. Overridden by the `AGENT_HEALTH_EVAL_ROOTS`
@@ -280,6 +290,8 @@ export interface ResolvedConfig {
   storage?: StorageClusterConfig;
   /** OpenSearch observability cluster config authored in the TS config (optional). */
   observability?: ObservabilityClusterConfig;
+  /** Additional observability sources authored in the TS config (optional). */
+  observabilitySources?: ObservabilitySourceConfig[];
   /** Eval source roots authored in the TS config (optional; see UserConfig.evalRoots). */
   evalRoots?: string[];
 }

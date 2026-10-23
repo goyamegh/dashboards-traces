@@ -261,7 +261,7 @@ export interface IEvaluatorOperations {
  * Logs query operations
  */
 export interface ILogsOperations {
-  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number; truncated?: boolean }>;
+  query(options: LogsQueryOptions): Promise<{ logs: OpenSearchLog[]; total: number; truncated?: boolean; warnings?: Array<{ source: string; message: string }> }>;
 }
 
 /**
@@ -275,6 +275,8 @@ export interface ITracesOperations {
     hasMore?: boolean;
     /** True when the backend hit a scan/row cap — the result is a lower bound, not the whole trace set. */
     truncated?: boolean;
+    /** Composite backend: sources that failed (named) while the others answered. */
+    warnings?: Array<{ source: string; message: string }>;
   }>;
   getByTraceId(traceId: string): Promise<Span[]>;
   getByRunIds(runIds: string[]): Promise<Span[]>;
@@ -312,7 +314,7 @@ export interface IMetricsOperations {
 
 /** Human-readable identity of the active observability backend (Settings / health UI). */
 export interface ObservabilityBackendInfo {
-  type: ObservabilityBackendType | 'file';
+  type: ObservabilityBackendType | 'file' | 'composite';
   /** Where traces are read from: index pattern, log group, or directory. */
   target: string;
   region?: string;

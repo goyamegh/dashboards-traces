@@ -41,7 +41,7 @@ jest.mock('@/services/storage', () => ({
 jest.mock('@/lib/dataSourceConfig', () => ({
   getConfigStatus: jest.fn().mockResolvedValue({
     storage: { configured: false, source: 'none' },
-    observability: { configured: false, source: 'none' },
+    observability: { configured: false, source: 'none', sources: [] },
   }),
   saveStorageConfig: jest.fn().mockResolvedValue(undefined),
   saveObservabilityConfig: jest.fn().mockResolvedValue(undefined),
@@ -190,7 +190,7 @@ describe('handleTestObservabilityConnection', () => {
   it('shows a helpful error message when the server returns an empty body', async () => {
     await renderAndWait();
 
-    const input = document.getElementById('obs-endpoint') as HTMLInputElement;
+    const input = document.getElementById('obs-primary-endpoint') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'https://logs.example.com' } });
 
     (global.fetch as jest.Mock).mockResolvedValueOnce(emptyBodyResponse(502));
@@ -205,7 +205,7 @@ describe('handleTestObservabilityConnection', () => {
   it('shows success message with index warning when connection is ok', async () => {
     await renderAndWait();
 
-    const input = document.getElementById('obs-endpoint') as HTMLInputElement;
+    const input = document.getElementById('obs-primary-endpoint') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'https://logs.example.com' } });
 
     (global.fetch as jest.Mock).mockResolvedValueOnce({
@@ -231,7 +231,7 @@ describe('handleTestObservabilityConnection', () => {
   it('shows the server error message when the cluster is unreachable', async () => {
     await renderAndWait();
 
-    const input = document.getElementById('obs-endpoint') as HTMLInputElement;
+    const input = document.getElementById('obs-primary-endpoint') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'https://logs.example.com' } });
 
     (global.fetch as jest.Mock).mockResolvedValueOnce(connectionFailedResponse('ECONNREFUSED'));

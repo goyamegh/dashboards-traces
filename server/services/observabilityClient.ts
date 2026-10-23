@@ -18,7 +18,8 @@
 
 import { Request } from 'express';
 import { Client } from '@opensearch-project/opensearch';
-import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { resolveObservabilityConfig, resolveObservabilitySources, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { CompositeObservabilityModule } from '../adapters/observability/CompositeObservabilityModule.js';
 import { createOpenSearchClient, configToCacheKey } from './opensearchClientFactory.js';
 import { OpenSearchObservabilityModule } from '../adapters/observability/OpenSearchObservabilityModule.js';
 import { CloudWatchObservabilityModule } from '../adapters/observability/CloudWatchObservabilityModule.js';
@@ -81,7 +82,43 @@ export function createObservabilityModule(config: ObservabilityClusterConfig | n
   });
 }
 
+/** Build (cached) the module for one resolved source config. */
+function moduleForConfig(config: ObservabilityClusterConfig): IObservabilityModule {
+  if (observabilityBackendType(config) === 'cloudwatch') {
+    const key = cloudWatchCacheKey(config);
+    let mod = cloudWatchCache.get(key);
+    if (!mod) {
+      mod = createObservabilityModule(config) as CloudWatchObservabilityModule;
+      cloudWatchCache.set(key, mod);
+    }
+    return mod;
+  }
+  const client = getOrCreateClient(config as ClusterConfig);
+  return new OpenSearchObservabilityModule(client, {
+    traces: config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+    logs: config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+    metrics: config.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+  });
+}
+
+/**
+ * The observability module for a request: the file store when nothing is
+ * configured, a single backend for one source, or a composite that reads
+ * every configured source side by side.
+ */
 export function getObservabilityModule(req: Request): IObservabilityModule {
+  const sources = resolveObservabilitySources(req);
+  if (sources.length === 0) {
+    return new FileObservabilityModule();
+  }
+  if (sources.length > 1) {
+    return new CompositeObservabilityModule(sources.map((s) => ({ id: s.id, name: s.name, module: moduleForConfig(s) })));
+  }
+  return moduleForConfig(sources[0]);
+}
+
+/** @deprecated kept for callers that only know about the primary source. */
+export function getPrimaryObservabilityModule(req: Request): IObservabilityModule {
   const config = resolveObservabilityConfig(req);
   if (!config) {
     return new FileObservabilityModule();

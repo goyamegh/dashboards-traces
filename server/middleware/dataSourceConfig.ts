@@ -14,13 +14,15 @@
  */
 
 import { Request } from 'express';
-import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
+import type { StorageClusterConfig, ObservabilityClusterConfig, ObservabilitySourceConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
 import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../types/index.js';
 import {
   getStorageConfigFromFile,
   getObservabilityConfigFromFile,
   getStorageConfigFromTs,
   getObservabilityConfigFromTs,
+  getObservabilitySourcesFromTs,
+  getObservabilitySourcesFromFile,
 } from '../services/configService.js';
 
 // Default OTEL index patterns
@@ -108,6 +110,26 @@ export function resolveObservabilityConfig(req: Request): ObservabilityClusterCo
   if (envConfig) return withObservabilityDefaults(envConfig);
 
   return null;
+}
+
+/**
+ * Every observability source to read, in order: the primary (`observability`,
+ * resolved as before) first, then the additional `observabilitySources` —
+ * TS-authored ones, then state-file ones (code-first mode ignores the state
+ * file, exactly as for the primary). Each has defaults applied and a display
+ * name (`name` → `id` → "primary").
+ */
+export function resolveObservabilitySources(req: Request): Array<ObservabilitySourceConfig & { name: string }> {
+  const out: Array<ObservabilitySourceConfig & { name: string }> = [];
+  const primary = resolveObservabilityConfig(req);
+  if (primary) out.push({ ...primary, id: 'primary', name: 'primary' });
+  const stateIgnored = !!getObservabilityConfigFromTs() || getObservabilitySourcesFromTs().length > 0;
+  const extra = [...getObservabilitySourcesFromTs(), ...(stateIgnored ? [] : getObservabilitySourcesFromFile())];
+  for (const src of extra) {
+    if (out.some((o) => o.id === src.id)) continue;
+    out.push({ ...withObservabilityDefaults(src), id: src.id, name: src.name || src.id });
+  }
+  return out;
 }
 
 /**

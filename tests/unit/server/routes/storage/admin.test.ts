@@ -134,6 +134,8 @@ jest.mock('@/server/services/configService', () => ({
   saveObservabilityConfig: jest.fn(),
   clearStorageConfig: jest.fn(),
   clearObservabilityConfig: jest.fn(),
+  saveObservabilitySource: jest.fn(),
+  deleteObservabilitySource: jest.fn(),
 }));
 
 // Import mocked adapter functions
@@ -160,7 +162,11 @@ import {
   saveObservabilityConfig,
   clearStorageConfig,
   clearObservabilityConfig,
+  saveObservabilitySource,
+  deleteObservabilitySource,
 } from '@/server/services/configService';
+const mockSaveObservabilitySource = saveObservabilitySource as jest.Mock;
+const mockDeleteObservabilitySource = deleteObservabilitySource as jest.Mock;
 
 const mockGetStorageModule = getStorageModule as jest.Mock;
 const mockTestStorageConnection = testStorageConnection as jest.Mock;
@@ -831,6 +837,73 @@ describe('Admin Storage Routes', () => {
     });
   });
 
+  describe('observability sources (several, read side by side)', () => {
+    it('POST /api/storage/config/observability accepts a CloudWatch body without an endpoint', async () => {
+      const { req, res } = createMocks({}, { type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default', logGroups: { traces: 'aws/spans', logs: '' } });
+      await getRouteHandler(adminRoutes, 'post', '/api/storage/config/observability')(req, res);
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockSaveObservabilityConfig).toHaveBeenCalledWith({ type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default', logGroups: { traces: 'aws/spans' } });
+    });
+
+    it('POST /api/storage/config/observability rejects CloudWatch without a region and an unknown type', async () => {
+      let m = createMocks({}, { type: 'cloudwatch' });
+      await getRouteHandler(adminRoutes, 'post', '/api/storage/config/observability')(m.req, m.res);
+      expect(m.res.status).toHaveBeenCalledWith(400);
+      m = createMocks({}, { type: 'splunk', endpoint: 'https://x' });
+      await getRouteHandler(adminRoutes, 'post', '/api/storage/config/observability')(m.req, m.res);
+      expect(m.res.status).toHaveBeenCalledWith(400);
+      expect(mockSaveObservabilityConfig).not.toHaveBeenCalled();
+    });
+
+    it('PUT /sources/:id upserts an additional CloudWatch source', async () => {
+      const { req, res } = createMocks({ id: 'team-cw' }, { name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1' });
+      await getRouteHandler(adminRoutes, 'put', '/api/storage/config/observability/sources/:id')(req, res);
+      expect(mockSaveObservabilitySource).toHaveBeenCalledWith(expect.objectContaining({ id: 'team-cw', name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1' }));
+      expect(res.json).toHaveBeenCalledWith({ success: true, id: 'team-cw' });
+    });
+
+    it('PUT /sources/:id upserts an additional OpenSearch source and validates ids', async () => {
+      const ok = createMocks({ id: 'other.cluster' }, { endpoint: 'https://other.example', authType: 'sigv4', awsRegion: 'us-west-2' });
+      await getRouteHandler(adminRoutes, 'put', '/api/storage/config/observability/sources/:id')(ok.req, ok.res);
+      expect(mockSaveObservabilitySource).toHaveBeenCalledWith(expect.objectContaining({ id: 'other.cluster', type: 'opensearch', endpoint: 'https://other.example' }));
+      for (const bad of ['primary', 'has space', '']) {
+        const m = createMocks({ id: bad }, { endpoint: 'https://x' });
+        await getRouteHandler(adminRoutes, 'put', '/api/storage/config/observability/sources/:id')(m.req, m.res);
+        expect(m.res.status).toHaveBeenCalledWith(400);
+      }
+      const noEndpoint = createMocks({ id: 'x1' }, { type: 'opensearch' });
+      await getRouteHandler(adminRoutes, 'put', '/api/storage/config/observability/sources/:id')(noEndpoint.req, noEndpoint.res);
+      expect(noEndpoint.res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('PUT / DELETE /sources/:id answer 409 in code-first mode', async () => {
+      mockIsCodeFirstMode.mockReturnValue(true);
+      try {
+        const put = createMocks({ id: 'team-cw' }, { type: 'cloudwatch', awsRegion: 'us-east-1' });
+        await getRouteHandler(adminRoutes, 'put', '/api/storage/config/observability/sources/:id')(put.req, put.res);
+        expect(put.res.status).toHaveBeenCalledWith(409);
+        const del = createMocks({ id: 'team-cw' });
+        await getRouteHandler(adminRoutes, 'delete', '/api/storage/config/observability/sources/:id')(del.req, del.res);
+        expect(del.res.status).toHaveBeenCalledWith(409);
+        expect(mockSaveObservabilitySource).not.toHaveBeenCalled();
+        expect(mockDeleteObservabilitySource).not.toHaveBeenCalled();
+      } finally {
+        mockIsCodeFirstMode.mockReturnValue(false);
+      }
+    });
+
+    it('DELETE /sources/:id removes a source, 404 for an unknown one', async () => {
+      mockDeleteObservabilitySource.mockReturnValueOnce(true);
+      const ok = createMocks({ id: 'team-cw' });
+      await getRouteHandler(adminRoutes, 'delete', '/api/storage/config/observability/sources/:id')(ok.req, ok.res);
+      expect(ok.res.json).toHaveBeenCalledWith({ success: true });
+      mockDeleteObservabilitySource.mockReturnValueOnce(false);
+      const missing = createMocks({ id: 'nope' });
+      await getRouteHandler(adminRoutes, 'delete', '/api/storage/config/observability/sources/:id')(missing.req, missing.res);
+      expect(missing.res.status).toHaveBeenCalledWith(404);
+    });
+  });
+
   describe('POST /api/storage/config/observability', () => {
     it('should save observability config', async () => {
       const { req, res } = createMocks({}, {
@@ -843,6 +916,7 @@ describe('Admin Storage Routes', () => {
       await handler(req, res);
 
       expect(mockSaveObservabilityConfig).toHaveBeenCalledWith({
+        type: 'opensearch',
         endpoint: 'https://new-obs.com',
         username: 'user',
         indexes: { traces: 'traces-*' },

@@ -18,11 +18,14 @@ jest.mock('@/server/services/configService', () => ({
   getObservabilityConfigFromFile: jest.fn().mockReturnValue(null),
   getStorageConfigFromTs: jest.fn().mockReturnValue(null),
   getObservabilityConfigFromTs: jest.fn().mockReturnValue(null),
+  getObservabilitySourcesFromTs: jest.fn().mockReturnValue([]),
+  getObservabilitySourcesFromFile: jest.fn().mockReturnValue([]),
 }));
 
 import {
   resolveStorageConfig,
   resolveObservabilityConfig,
+  resolveObservabilitySources,
   DEFAULT_OTEL_INDEXES,
 } from '@/server/middleware/dataSourceConfig';
 import {
@@ -30,7 +33,11 @@ import {
   getObservabilityConfigFromFile,
   getStorageConfigFromTs,
   getObservabilityConfigFromTs,
+  getObservabilitySourcesFromTs,
+  getObservabilitySourcesFromFile,
 } from '@/server/services/configService';
+const mockSrcTs = getObservabilitySourcesFromTs as jest.Mock;
+const mockSrcFile = getObservabilitySourcesFromFile as jest.Mock;
 
 const mockStorageFile = getStorageConfigFromFile as jest.Mock;
 const mockObsFile = getObservabilityConfigFromFile as jest.Mock;
@@ -47,6 +54,8 @@ beforeEach(() => {
   mockObsFile.mockReturnValue(null);
   mockStorageTs.mockReturnValue(null);
   mockObsTs.mockReturnValue(null);
+  mockSrcTs.mockReturnValue([]);
+  mockSrcFile.mockReturnValue([]);
   process.env = { ...OLD_ENV };
   delete process.env.OPENSEARCH_STORAGE_ENDPOINT;
   delete process.env.OPENSEARCH_STORAGE_USERNAME;
@@ -179,5 +188,43 @@ describe('resolveObservabilityConfig precedence', () => {
     const cfg = resolveObservabilityConfig(req);
     expect(cfg?.endpoint).toBe('https://env-obs.com');
     expect(cfg?.indexes?.traces).toBe('env-traces-*');
+  });
+});
+
+describe('resolveObservabilitySources — several sources read side by side', () => {
+  it('returns nothing when nothing is configured', () => {
+    expect(resolveObservabilitySources(req)).toEqual([]);
+  });
+
+  it('the primary comes first (as "primary"), then TS-authored sources, then state-file sources; defaults applied per type', () => {
+    mockObsTs.mockReturnValue({ endpoint: 'https://mine.example' });
+    mockSrcTs.mockReturnValue([{ id: 'team-cw', name: 'Team CloudWatch', type: 'cloudwatch', awsRegion: 'us-east-1' }]);
+    const list = resolveObservabilitySources(req);
+    expect(list.map((s) => [s.id, s.name, s.type])).toEqual([['primary', 'primary', 'opensearch'], ['team-cw', 'Team CloudWatch', 'cloudwatch']]);
+    expect(list[0].indexes?.traces).toBe(DEFAULT_OTEL_INDEXES.traces);
+    expect(list[1].logGroups).toEqual({ traces: 'aws/spans', logs: '/agent-health/{service.name}' });
+  });
+
+  it('code-first mode (any TS observability config) ignores state-file sources, exactly like the primary', () => {
+    mockObsTs.mockReturnValue({ endpoint: 'https://mine.example' });
+    mockSrcFile.mockReturnValue([{ id: 'ui-added', type: 'cloudwatch', awsRegion: 'us-west-2' }]);
+    expect(resolveObservabilitySources(req).map((s) => s.id)).toEqual(['primary']);
+  });
+
+  it('ui-first mode: state-file sources are read; a source id used twice is kept once', () => {
+    mockObsFile.mockReturnValue({ endpoint: 'https://mine.example' });
+    mockSrcFile.mockReturnValue([
+      { id: 'cw', type: 'cloudwatch', awsRegion: 'us-west-2' },
+      { id: 'cw', type: 'cloudwatch', awsRegion: 'eu-west-1' },
+      { id: 'other', endpoint: 'https://other.example' },
+    ]);
+    const list = resolveObservabilitySources(req);
+    expect(list.map((s) => [s.id, s.name])).toEqual([['primary', 'primary'], ['cw', 'cw'], ['other', 'other']]);
+    expect(list[1].awsRegion).toBe('us-west-2');
+  });
+
+  it('additional sources alone (no primary) still form the list', () => {
+    mockSrcFile.mockReturnValue([{ id: 'cw', type: 'cloudwatch', awsRegion: 'us-west-2' }]);
+    expect(resolveObservabilitySources(req).map((s) => s.id)).toEqual(['cw']);
   });
 });

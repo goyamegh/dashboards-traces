@@ -89,6 +89,12 @@ router.post('/api/traces', async (req: Request, res: Response) => {
           warning = `Results are partial: the ${backend} query hit a scan, row or time-window limit; narrow the time range or filters to see everything.`;
           warningCategory = 'unknown';
         }
+        if (result.warnings && result.warnings.length > 0) {
+          // Composite backend: name the source(s) that failed; the others answered.
+          const failed = result.warnings.map((w) => `${w.source}: ${w.message}`).join('; ');
+          warning = `${warning ? warning + ' ' : ''}Some sources could not be read — ${failed}`;
+          warningCategory = warningCategory ?? 'unknown';
+        }
       } catch (e: any) {
         const classified = classifyOpenSearchError(e);
         console.warn(`[TracesAPI] ${backend} query failed (${classified.category}):`, classified.message);

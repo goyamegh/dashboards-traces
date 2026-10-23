@@ -1830,6 +1830,8 @@ export interface MetricsResult {
   correlatedBy?: 'ids' | 'window' | 'mixed';
   /** Why `status` is 'error' (trace-store query failed) — the numbers are unknown, not zero. */
   error?: string;
+  /** Composite backend: the configured source these metrics were taken from. */
+  source?: string;
 }
 
 // ============ Data Source Configuration Types ============
@@ -1905,6 +1907,23 @@ export interface ObservabilityClusterConfig extends Omit<ClusterConfig, 'endpoin
     logs?: string;     // default: '/agent-health/{service.name}'
   };
 }
+
+/**
+ * One of several observability sources read side by side. Traces and logs
+ * from every source are merged (deduped by span id) into one view; each span
+ * is tagged `agent_health.source = <name>`. Metrics are taken from the first
+ * source (in configured order) that holds a run's spans — never summed across
+ * sources, so an agent that ships to both is not double-counted.
+ */
+export interface ObservabilitySourceConfig extends ObservabilityClusterConfig {
+  /** Stable id (used for Settings edits and the `source` tag when no name). */
+  id: string;
+  /** Display name shown on spans and in Settings. */
+  name?: string;
+}
+
+/** Span attribute set by the composite reader: which configured source a span came from. */
+export const ATTR_AGENT_HEALTH_SOURCE = 'agent_health.source';
 
 /** Effective backend type for an observability config (defaults to 'opensearch'). */
 export function observabilityBackendType(config: Pick<ObservabilityClusterConfig, 'type'> | null | undefined): ObservabilityBackendType {

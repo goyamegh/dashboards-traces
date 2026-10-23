@@ -68,6 +68,22 @@ export interface ConfigStatus {
       traces?: string;
       logs?: string;
     };
+    /** Additional sources read side by side with the primary (no secrets). */
+    sources?: Array<{
+      id: string;
+      name?: string;
+      source: 'file' | 'typescript' | 'environment' | 'none';
+      type: 'opensearch' | 'cloudwatch';
+      endpoint?: string;
+      authType?: ClusterAuthType;
+      username?: string;
+      hasPassword?: boolean;
+      awsProfile?: string;
+      awsRegion?: string;
+      awsService?: 'es' | 'aoss';
+      indexes?: { traces?: string; logs?: string; metrics?: string };
+      logGroups?: { traces?: string; logs?: string };
+    }>;
   };
   runtime?: {
     storage: {
@@ -175,6 +191,8 @@ export async function saveObservabilityConfig(config: ObservabilityClusterConfig
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      type: config.type || undefined,
+      logGroups: config.logGroups,
       endpoint: config.endpoint,
       authType: config.authType || undefined,
       username: config.username || undefined,

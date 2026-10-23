@@ -25,6 +25,8 @@ import { reindexSingleIndex } from '../../services/mappingFixer.js';
 import { initializeStorageFromConfig } from '../../services/storageInitializer.js';
 import {
   getConfigStatus,
+  saveObservabilitySource,
+  deleteObservabilitySource,
   getStorageConfigFromFile,
   getStorageConfigFromTs,
   saveStorageConfig,
@@ -438,16 +440,98 @@ router.post(
 );
 
 /**
+ * PUT /api/storage/config/observability/sources/:id
+ * Upsert one ADDITIONAL observability source (read side by side with the
+ * primary). Same body shapes as POST /api/storage/config/observability plus
+ * an optional `name`. ui-first only (409 in code-first mode).
+ */
+router.put('/api/storage/config/observability/sources/:id', (req: Request, res: Response) => {
+  try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id) || id === 'primary') {
+      return res.status(400).json({ error: 'id must be 1-64 chars of letters, digits, "_", "." or "-", and not "primary"' });
+    }
+    const { name, type, endpoint, username, password, tlsSkipVerify, indexes, logGroups, authType, awsProfile, awsRegion, awsService } = req.body ?? {};
+    if (name !== undefined && (typeof name !== 'string' || name.length > 80)) {
+      return res.status(400).json({ error: 'name must be a string of at most 80 characters' });
+    }
+    if (type !== undefined && type !== 'opensearch' && type !== 'cloudwatch') {
+      return res.status(400).json({ error: `Invalid type '${type}'. Expected 'opensearch' or 'cloudwatch'.` });
+    }
+    if (type === 'cloudwatch') {
+      if (!awsRegion || typeof awsRegion !== 'string') return res.status(400).json({ error: 'awsRegion is required for CloudWatch' });
+      saveObservabilitySource({ id, name, type: 'cloudwatch', awsRegion, awsProfile: awsProfile || undefined,
+        logGroups: logGroups && (logGroups.traces || logGroups.logs) ? { ...(logGroups.traces && { traces: logGroups.traces }), ...(logGroups.logs && { logs: logGroups.logs }) } : undefined });
+      return res.json({ success: true, id });
+    }
+    if (!endpoint || typeof endpoint !== 'string') return res.status(400).json({ error: 'Endpoint is required' });
+    if (authType !== undefined && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
+      return res.status(400).json({ error: `Invalid authType '${authType}'. Expected 'sigv4', 'basic', or 'none'.` });
+    }
+    saveObservabilitySource({ id, name, type: 'opensearch', endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService });
+    res.json({ success: true, id });
+  } catch (error: any) {
+    console.error('[StorageAPI] Failed to save observability source:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/storage/config/observability/sources/:id — remove an additional source.
+ */
+router.delete('/api/storage/config/observability/sources/:id', (req: Request, res: Response) => {
+  try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
+    const removed = deleteObservabilitySource(String(req.params.id));
+    if (!removed) return res.status(404).json({ error: 'Unknown observability source' });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/storage/config/observability
- * Save observability configuration to file
- * Body: { endpoint, username?, password?, tlsSkipVerify?, indexes?: { traces?, logs?, metrics? } }
+ * Save observability configuration to the runtime state file.
+ * Body (OpenSearch, default): { type?: 'opensearch', endpoint, username?, password?, tlsSkipVerify?, authType?, aws*?, indexes?: { traces?, logs?, metrics? } }
+ * Body (CloudWatch):          { type: 'cloudwatch', awsRegion, awsProfile?, logGroups?: { traces?, logs? } }
  */
 router.post('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
     if (isCodeFirstMode()) {
       return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
     }
-    const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
+    const { type, endpoint, username, password, tlsSkipVerify, indexes, logGroups, authType, awsProfile, awsRegion, awsService } = req.body;
+
+    if (type !== undefined && type !== 'opensearch' && type !== 'cloudwatch') {
+      return res.status(400).json({ error: `Invalid type '${type}'. Expected 'opensearch' or 'cloudwatch'.` });
+    }
+
+    if (type === 'cloudwatch') {
+      // CloudWatch: region selects the backend; no endpoint, no basic auth.
+      if (!awsRegion || typeof awsRegion !== 'string') {
+        return res.status(400).json({ error: 'awsRegion is required for CloudWatch' });
+      }
+      for (const [k, v] of Object.entries({ awsProfile, tracesLogGroup: logGroups?.traces, logsLogGroup: logGroups?.logs })) {
+        if (v !== undefined && typeof v !== 'string') {
+          return res.status(400).json({ error: `${k} must be a string when provided` });
+        }
+      }
+      saveObservabilityConfig({
+        type: 'cloudwatch',
+        awsRegion,
+        awsProfile: awsProfile || undefined,
+        logGroups: logGroups && (logGroups.traces || logGroups.logs)
+          ? { ...(logGroups.traces && { traces: logGroups.traces }), ...(logGroups.logs && { logs: logGroups.logs }) }
+          : undefined,
+      });
+      return res.json({ success: true, message: 'Observability configuration saved' });
+    }
 
     if (!endpoint) {
       return res.status(400).json({ error: 'Endpoint is required' });
@@ -461,7 +545,7 @@ router.post('/api/storage/config/observability', (req: Request, res: Response) =
       });
     }
 
-    saveObservabilityConfig({ endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService });
+    saveObservabilityConfig({ type: 'opensearch', endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService });
     res.json({ success: true, message: 'Observability configuration saved' });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to save observability config:', error.message);
