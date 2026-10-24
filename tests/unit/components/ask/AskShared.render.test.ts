@@ -95,6 +95,13 @@ describe('TurnView', () => {
     expect(screen.getByTestId('ask-turn-answer').querySelector('strong')?.textContent).toBe('span');
     rerender(inRouter(h(TurnView, { turn: { ...base, status: 'error', error: 'Cancelled' }, thread })));
     expect(screen.getByTestId('ask-turn-error').textContent).toContain('Cancelled');
+    expect(screen.queryByTestId('ask-turn-answer')).toBeNull();
+    expect(screen.queryByTestId('ask-turn-waiting')).toBeNull();
+    // a model call that died mid-answer: what streamed stays visible, the error sits under it (not a success, not blank)
+    rerender(inRouter(h(TurnView, { turn: { ...base, status: 'error', answer: 'Half an answer', error: 'Model stream error: socket hang up' }, thread })));
+    expect(screen.getByTestId('ask-turn-answer').textContent).toContain('Half an answer');
+    expect(screen.getByTestId('ask-turn-error').textContent).toContain('socket hang up');
+    expect(screen.queryByTestId('ask-turn-meta')).toBeNull();
   });
 });
 

@@ -79,15 +79,17 @@ export const TurnView: React.FC<{ turn: AskTurnState; thread?: AskThread }> = ({
   <div className="space-y-1" data-testid="ask-turn" data-status={turn.status}>
     <div className="text-xs font-medium text-foreground/90" data-testid="ask-turn-question">{turn.question}</div>
     <ToolActivity turn={turn} />
-    {turn.status === 'error' ? (
-      <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive" data-testid="ask-turn-error">{turn.error}</div>
-    ) : turn.answer ? (
+    {turn.answer ? (
       <div data-testid="ask-turn-answer"><AskMarkdown>{turn.answer}</AskMarkdown></div>
-    ) : (
+    ) : turn.status === 'streaming' ? (
       <div className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="ask-turn-waiting">
         <Loader2 size={12} className="animate-spin" /> {thread?.prepared || thread?.sessionId ? 'Thinking…' : 'Reading the page data…'}
       </div>
-    )}
+    ) : null}
+    {turn.status === 'error' ? (
+      // Shown UNDER whatever streamed before the failure: a partial answer is context, not a success.
+      <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive" data-testid="ask-turn-error">{turn.error}</div>
+    ) : null}
     {turn.status === 'streaming' && turn.answer ? <Loader2 size={12} className="animate-spin text-muted-foreground" /> : null}
     <TurnMeta turn={turn} thread={thread} />
   </div>

@@ -198,6 +198,62 @@ describe('useAskThreads', () => {
     expect(result.current.threads[id]).toBeUndefined();
   });
 
+  it('"Add to current question" after an answer: the follow-up carries ONLY the newly attached highlights (the model already saw the first ones)', async () => {
+    mockPrepare.mockResolvedValue({ sessionId: 'ask-prep', refs: {}, loaded: [], model: 'm' });
+    streamOk('first answer');
+    const { result } = renderHook(() => useAskThreads());
+    let id = '';
+    await act(async () => { id = result.current.createThread('/runs/r', [{ text: 'first highlight', nearbyText: 'ctx' }], { prepare: true }).id; await new Promise((r) => setTimeout(r, 5)); });
+    await act(async () => { await result.current.ask(id, 'why?'); });
+    expect(mockStream.mock.calls[0][0].selections).toEqual([{ text: 'first highlight', nearbyText: 'ctx' }]);
+    // a plain follow-up adds nothing
+    await act(async () => { await result.current.ask(id, 'and?'); });
+    expect(mockStream.mock.calls[1][0].selections).toEqual([]);
+    // the user highlights more text and adds it to this thread, then asks again
+    act(() => { result.current.addSelection(id, { text: 'second highlight' }); result.current.addSelection(id, { text: 'third highlight', nearbyText: 'more' }); });
+    expect(result.current.threads[id].selections.map((x) => x.text)).toEqual(['first highlight', 'second highlight', 'third highlight']);
+    await act(async () => { await result.current.ask(id, 'are these related?'); });
+    expect(mockStream.mock.calls[2][0]).toMatchObject({ sessionId: 'ask-prep', selections: [{ text: 'second highlight' }, { text: 'third highlight', nearbyText: 'more' }] });
+    // …and once answered they are not re-sent either; the panel still lists all three
+    await act(async () => { await result.current.ask(id, 'ok'); });
+    expect(mockStream.mock.calls[3][0].selections).toEqual([]);
+    expect(result.current.threads[id].selections).toHaveLength(3);
+    // a highlight whose question FAILED is still unsent, so the retry carries it
+    act(() => { result.current.addSelection(id, { text: 'fourth' }); });
+    mockStream.mockRejectedValueOnce(new Error('429'));
+    await act(async () => { await result.current.ask(id, 'again?'); });
+    expect(mockStream.mock.calls[4][0].selections).toEqual([{ text: 'fourth' }]);
+    await act(async () => { await result.current.ask(id, 'retry'); });
+    expect(mockStream.mock.calls[5][0].selections).toEqual([{ text: 'fourth' }]);
+    // imported (persisted) threads: every stored highlight was already seen by the model
+    let imported: any;
+    act(() => { imported = result.current.importSession({ id: 'ask-9', page: { route: '/x' }, selections: [{ text: 'old' }], turns: [] } as any); });
+    await act(async () => { await result.current.ask(imported.id, 'more'); });
+    expect(mockStream.mock.calls[6][0]).toMatchObject({ sessionId: 'ask-9', selections: [] });
+  });
+
+  it('Stop during a pending prepare cancels the question: no ask is dispatched once the prepare settles', async () => {
+    let resolvePrepare: (v: any) => void = () => {};
+    mockPrepare.mockImplementation(() => new Promise((r) => { resolvePrepare = r; }));
+    streamOk('never');
+    const { result } = renderHook(() => useAskThreads());
+    let id = '';
+    await act(async () => { id = result.current.createThread('/runs/r', [{ text: 'hl' }], { prepare: true }).id; await new Promise((r) => setTimeout(r, 5)); });
+    let asking: Promise<void> = Promise.resolve();
+    act(() => { asking = result.current.ask(id, 'why?'); });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.threads[id].turns[0].status).toBe('streaming');
+    act(() => { result.current.cancel(id); }); // Stop, while the prepare is still in flight
+    await act(async () => { resolvePrepare({ sessionId: 'ask-prep', refs: {}, loaded: [], model: 'm' }); await asking; });
+    expect(mockStream).not.toHaveBeenCalled();
+    expect(result.current.threads[id].turns[0]).toMatchObject({ status: 'error', error: 'Cancelled' });
+    // the thread itself is fine: the prepared session is still there and the next question uses it
+    await act(async () => { await result.current.ask(id, 'ok now'); });
+    expect(mockStream).toHaveBeenCalledTimes(1);
+    expect(mockStream.mock.calls[0][0]).toMatchObject({ sessionId: 'ask-prep', question: 'ok now', selections: [{ text: 'hl' }] });
+    expect(result.current.threads[id].turns[1].status).toBe('done');
+  });
+
   it('cancel aborts the in-flight stream and marks the turn Cancelled', async () => {
     mockStream.mockImplementation((_b: any, _h: any, signal: AbortSignal) => new Promise((_, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted'))); }));
     const { result } = renderHook(() => useAskThreads());

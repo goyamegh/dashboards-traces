@@ -133,13 +133,16 @@ export interface AskTurnState {
   startedAt: number;
 }
 
+/** A highlight attached to a thread; `sent` once a question carrying it was answered (so follow-ups only add NEW ones). */
+export interface ThreadSelection extends AskSelection { sent?: boolean }
+
 export interface AskThread {
   /** Client id (stable before the server assigns a sessionId). */
   id: string;
   /** pi session id (from prepare or the first answer). */
   sessionId?: string;
   route: string;
-  selections: AskSelection[];
+  selections: ThreadSelection[];
   turns: AskTurnState[];
   model?: string;
   loaded?: string[];
@@ -227,7 +230,7 @@ export function useAskThreads() {
       id: `s-${s.id}`,
       sessionId: s.id,
       route: s.page.route,
-      selections: s.selections,
+      selections: s.selections.map((sel) => ({ ...sel, sent: true })),
       model: s.model,
       createdAt: Date.now(),
       turns: s.turns.map((turn) => ({
@@ -248,23 +251,35 @@ export function useAskThreads() {
 
   const ask = useCallback(async (threadId: string, question: string) => {
     if (!threadsRef.current[threadId]) return;
-    const isFirstTurn = threadsRef.current[threadId].turns.length === 0;
     const turnId = `turn-${Date.now().toString(36)}`;
     const turn: AskTurnState = { id: turnId, question, answer: '', status: 'streaming', tools: [], startedAt: Date.now() };
     update(threadId, (t) => ({ ...t, turns: [...t.turns, turn] }));
+    const patchTurn = (fn: (x: AskTurnState) => AskTurnState) =>
+      update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? fn(x) : x)) }));
+    // Stop must work from the moment the turn shows as streaming — including
+    // while a slow prepare is still pending — so the controller exists first,
+    // and Stop marks the turn Cancelled right away (not when the prepare returns).
+    const controller = new AbortController();
+    aborters.current[threadId] = controller;
+    const cancelledEarly = () => patchTurn((x) => ({ ...x, status: 'error', error: 'Cancelled' }));
+    controller.signal.addEventListener('abort', cancelledEarly);
     // A prepare fired on chip click may still be in flight when the user hits
     // Enter; wait for it so the question joins THAT pi session instead of
     // making the server build a second snapshot.
     if (prepares.current[threadId]) await prepares.current[threadId];
+    controller.signal.removeEventListener('abort', cancelledEarly);
     const thread = threadsRef.current[threadId];
     if (!thread) return;
+    if (controller.signal.aborted) {
+      // Stopped during prepare: no paid ask is dispatched.
+      if (aborters.current[threadId] === controller) delete aborters.current[threadId];
+      return;
+    }
 
-    const controller = new AbortController();
-    aborters.current[threadId] = controller;
-    // The first turn carries the highlighted text (prepare() only used it for the snapshot); follow-ups add none.
-    const sendSelections = isFirstTurn ? thread.selections : [];
-    const patchTurn = (fn: (x: AskTurnState) => AskTurnState) =>
-      update(threadId, (t) => ({ ...t, turns: t.turns.map((x) => (x.id === turnId ? fn(x) : x)) }));
+    // Highlights the model has not seen yet: all of them on the first turn
+    // (prepare() only used them for the snapshot), only the newly added ones
+    // ("Add to current question") on follow-ups.
+    const sendSelections: AskSelection[] = thread.selections.filter((s) => !s.sent).map(({ sent: _sent, ...s }) => s);
     try {
       const done = await streamAsk(
         { question, selections: sendSelections, pageContext: buildPageContext(thread.route), sessionId: thread.sessionId },
@@ -279,10 +294,13 @@ export function useAskThreads() {
         controller.signal
       );
       patchTurn((x) => ({ ...x, answer: done.answer, status: 'done', firstTokenMs: done.firstTokenMs, durationMs: done.durationMs }));
+      // The model has now seen these highlights; the next follow-up only carries new ones.
+      const sentTexts = new Set(sendSelections.map((s) => s.text));
+      update(threadId, (t) => ({ ...t, selections: t.selections.map((s) => (sentTexts.has(s.text) ? { ...s, sent: true } : s)) }));
     } catch (err: any) {
       patchTurn((x) => ({ ...x, status: 'error', error: controller.signal.aborted ? 'Cancelled' : err?.message ?? String(err) }));
     } finally {
-      delete aborters.current[threadId];
+      if (aborters.current[threadId] === controller) delete aborters.current[threadId];
     }
   }, [update]);
 

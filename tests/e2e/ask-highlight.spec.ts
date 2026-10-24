@@ -382,6 +382,137 @@ test.describe('Agent Health assistant — highlight & ask', () => {
     await expect(nudge).toHaveCount(0);
   });
 
+  test('"Add to current question" AFTER an answer: the follow-up request carries the newly highlighted text (and not the one the model already saw)', async ({ page, request, testData }) => {
+    const tc = await seedTestCase(request, uniqueTestName('ask-add-later'));
+    testData.testCase(tc.id);
+    const route = `/evaluations/test-cases/${tc.id}`;
+    await stubSessions(page, route);
+    const stub = await stubAsk(page, 'First answer.');
+    stub.release();
+
+    await page.goto(route);
+    await page.waitForSelector('[data-testid="sidebar"]');
+    // Ask about one highlight and move the thread to the panel; wait for the answer.
+    await selectText(page, 'HTTP 503 for roughly four percent');
+    await page.locator('[data-testid="ask-chip"]').click();
+    const popover = page.locator('[data-testid="ask-popover"]');
+    await popover.locator('[data-testid="ask-composer-input"]').fill('Why did this case fail?');
+    await page.keyboard.press('Enter');
+    await expect(popover.locator('[data-testid="ask-turn-answer"]')).toContainText('First answer.');
+    await popover.locator('[data-testid="ask-open-in-panel"]').click();
+    const panel = page.locator('[data-testid="ask-panel"]');
+    await expect(panel.locator('[data-testid="ask-turn"]')).toHaveCount(1);
+    expect(stub.asks[0].selections.map((s: any) => s.text)).toEqual([expect.stringContaining('HTTP 503 for roughly four percent')]);
+
+    // Now highlight DIFFERENT text and add it to the answered thread.
+    await selectText(page, 'since the last deploy');
+    const add = page.locator('[data-testid="ask-chip-add"]');
+    await expect(add).toHaveText(/Add to current question/);
+    await add.click();
+    await expect(panel.locator('[data-testid="ask-context-chips"] [data-testid="ask-selection-quote"]')).toHaveCount(2);
+
+    // The follow-up carries exactly the new highlight.
+    await panel.locator('[data-testid="ask-panel-composer-input"]').fill('Is this related?');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('[data-testid="ask-turn"]')).toHaveCount(2);
+    await expect.poll(() => stub.asks.length).toBe(2);
+    expect(stub.asks[1].sessionId).toBe(stub.asks[0].sessionId);
+    expect(stub.asks[1].selections).toHaveLength(1); // the first highlight (already seen by the model) is not re-sent
+    expect(stub.asks[1].selections[0].text).toContain('since the last deploy');
+    expect(stub.asks[1].selections[0].text).not.toContain('HTTP 503');
+
+    // A plain follow-up after that sends nothing new; the panel still shows both highlights.
+    await panel.locator('[data-testid="ask-panel-composer-input"]').fill('Thanks');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('[data-testid="ask-turn"]')).toHaveCount(3);
+    await expect.poll(() => stub.asks.length).toBe(3);
+    expect(stub.asks[2].selections).toEqual([]);
+    await expect(panel.locator('[data-testid="ask-context-chips"] [data-testid="ask-selection-quote"]')).toHaveCount(2);
+  });
+
+  test('Stop while the snapshot is still being prepared cancels the question: no /api/ask call is made when the prepare returns', async ({ page, request, testData }) => {
+    const tc = await seedTestCase(request, uniqueTestName('ask-stop-prepare'));
+    testData.testCase(tc.id);
+    const route = `/evaluations/test-cases/${tc.id}`;
+    await stubSessions(page, route);
+    // A SLOW prepare (the server is building the page snapshot) that the test releases.
+    let releasePrepare: () => void = () => {};
+    const prepareGate = new Promise<void>((r) => { releasePrepare = r; });
+    let prepares = 0;
+    await page.route(/\/api\/ask\/prepare$/, async (r: Route) => {
+      prepares += 1;
+      await prepareGate;
+      await r.fulfill({ json: { sessionId: 'ask-e2e-slow-prep', refs: {}, loaded: ['test case tc-stub'], model: 'amazon-bedrock/test-model' } });
+    });
+    const asks: any[] = [];
+    await page.route(/\/api\/ask$/, async (r: Route) => {
+      asks.push(r.request().postDataJSON());
+      const ev = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
+      await r.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: ev({ type: 'meta', sessionId: 'ask-e2e-slow-prep', turnId: 't', agent: { key: 'a', name: 'A', model: 'm' }, refs: {}, loaded: [], prepared: true }) + ev({ type: 'done', answer: 'Should never be asked.', durationMs: 1, toolCalls: [] }) });
+    });
+
+    await page.goto(route);
+    await page.waitForSelector('[data-testid="sidebar"]');
+    await selectText(page, 'HTTP 503 for roughly four percent');
+    await page.locator('[data-testid="ask-chip"]').click();
+    const popover = page.locator('[data-testid="ask-popover"]');
+    await expect.poll(() => prepares).toBe(1);
+    await popover.locator('[data-testid="ask-composer-input"]').fill('Why did this case fail?');
+    await page.keyboard.press('Enter');
+    // The question is pending on the prepare: the UI shows it as in flight, with Stop.
+    await expect(popover.locator('[data-testid="ask-turn-waiting"]')).toBeVisible();
+    await popover.locator('[data-testid="ask-composer-cancel"]').click();
+    await expect(popover.locator('[data-testid="ask-turn-error"]')).toHaveText('Cancelled');
+    // The prepare finishes AFTER Stop: the paid ask must not start.
+    releasePrepare();
+    await page.waitForTimeout(500);
+    expect(asks).toHaveLength(0);
+    // The thread is still usable: the next question goes to the prepared session.
+    await popover.locator('[data-testid="ask-composer-input"]').fill('Second try');
+    await page.keyboard.press('Enter');
+    await expect(popover.locator('[data-testid="ask-turn"]')).toHaveCount(2);
+    await expect.poll(() => asks.length).toBe(1);
+    expect(asks[0]).toMatchObject({ question: 'Second try', sessionId: 'ask-e2e-slow-prep' });
+  });
+
+  test('a model call that fails mid-answer shows the streamed part AND the error on that turn — never the previous answer as a new one', async ({ page, request, testData }) => {
+    const tc = await seedTestCase(request, uniqueTestName('ask-mid-answer-error'));
+    testData.testCase(tc.id);
+    const route = `/evaluations/test-cases/${tc.id}`;
+    await stubSessions(page, route);
+    await page.route(/\/api\/ask\/prepare$/, (r) => r.fulfill({ json: { sessionId: 'ask-e2e-err', refs: {}, loaded: [], model: 'amazon-bedrock/test-model' } }));
+    let asks = 0;
+    await page.route(/\/api\/ask$/, async (r: Route) => {
+      asks += 1;
+      const ev = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
+      const meta = ev({ type: 'meta', sessionId: 'ask-e2e-err', turnId: `t${asks}`, agent: { key: 'a', name: 'A', model: 'm' }, refs: {}, loaded: [], prepared: true });
+      // 1st turn: a full answer. 2nd turn: two deltas, then the provider dies (what the server emits for stopReason "error").
+      const body = asks === 1
+        ? meta + ev({ type: 'delta', content: 'The first answer.' }) + ev({ type: 'done', answer: 'The first answer.', durationMs: 900, firstTokenMs: 200, toolCalls: [] })
+        : meta + ev({ type: 'delta', content: 'Half an ' }) + ev({ type: 'delta', content: 'answer' }) + ev({ type: 'error', error: 'Model stream error: socket hang up' });
+      await r.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body });
+    });
+
+    await page.goto(route);
+    await page.waitForSelector('[data-testid="sidebar"]');
+    await selectText(page, 'HTTP 503 for roughly four percent');
+    await page.locator('[data-testid="ask-chip"]').click();
+    const popover = page.locator('[data-testid="ask-popover"]');
+    await popover.locator('[data-testid="ask-composer-input"]').fill('Why?');
+    await page.keyboard.press('Enter');
+    await expect(popover.locator('[data-testid="ask-turn-answer"]')).toContainText('The first answer.');
+    await popover.locator('[data-testid="ask-composer-input"]').fill('And then?');
+    await page.keyboard.press('Enter');
+    const turns = popover.locator('[data-testid="ask-turn"]');
+    await expect(turns).toHaveCount(2);
+    const failed = turns.nth(1);
+    await expect(failed).toHaveAttribute('data-status', 'error');
+    await expect(failed.locator('[data-testid="ask-turn-answer"]')).toHaveText('Half an answer');
+    await expect(failed.locator('[data-testid="ask-turn-error"]')).toContainText('socket hang up');
+    await expect(failed.locator('[data-testid="ask-turn-meta"]')).toHaveCount(0); // not presented as a finished answer
+    await expect(turns.nth(0).locator('[data-testid="ask-turn-answer"]')).toContainText('The first answer.'); // the earlier turn is untouched
+  });
+
   test('assistant.enabled: false → no chip on selection, panel explains, composer disabled', async ({ page, request, testData }) => {
     const tc = await seedTestCase(request, uniqueTestName('ask-disabled'));
     testData.testCase(tc.id);
