@@ -103,6 +103,19 @@ describe('ask routes — guards', () => {
     // prepares are a separate, larger bucket
     expect((await request(app).post('/api/ask/prepare').send({ pageContext: { route: '/' } })).status).toBe(200);
     expect(mockStreamAsk).toHaveBeenCalledTimes(ASK_RATE_LIMIT.asks);
+    // history reads (synchronous JSONL parsing) have their own bucket too
+    for (let i = 0; i < ASK_RATE_LIMIT.reads; i++) expect((await request(app).get('/api/ask/sessions')).status).toBe(200);
+    expect((await request(app).get('/api/ask/sessions')).status).toBe(429);
+    expect((await request(app).get('/api/ask/sessions/ask-1')).status).toBe(429);
+  });
+
+  it('never logs the question text (it can carry pasted secrets): the debug line has ids, route and sizes only', async () => {
+    const { debug } = require('@/lib/debug');
+    (debug as jest.Mock).mockClear();
+    await request(app).post('/api/ask').send({ question: 'my password is hunter2', pageContext: { route: '/runs/r1' }, selections: [{ text: 'hl' }] });
+    const lines = (debug as jest.Mock).mock.calls.map((c: any[]) => c.map(String).join(' '));
+    expect(lines.some((l: string) => l.includes('/runs/r1'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('hunter2');
   });
 
   it('checkRateLimit: fixed window per client; the window resets after windowMs', () => {
@@ -197,12 +210,12 @@ describe('ask routes — guards', () => {
     }
   });
 
-  it('POST /api/ask/prepare forwards pageContext / selections / modelId and maps a service failure to 500', async () => {
+  it('POST /api/ask/prepare forwards pageContext / selections only (a client cannot pick the model: the operator pin decides) and maps a service failure to 500', async () => {
     const body = { pageContext: { route: '/compare/b?runs=x,y' }, selections: [{ text: 'cell' }], modelId: 'amazon-bedrock/m' };
     const ok = await request(app).post('/api/ask/prepare').send(body);
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ sessionId: 'ask-1', refs: {}, loaded: [], model: 'm' });
-    expect(mockPrepare).toHaveBeenCalledWith(body);
+    expect(mockPrepare).toHaveBeenCalledWith({ pageContext: body.pageContext, selections: body.selections });
     mockPrepare.mockRejectedValueOnce(new Error('snapshot failed'));
     const bad = await request(app).post('/api/ask/prepare').send(body);
     expect(bad.status).toBe(500);

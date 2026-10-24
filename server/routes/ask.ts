@@ -15,6 +15,10 @@
  * Guards: `assistant.enabled: false` → every route but /status answers 404;
  * a per-client token bucket (see ASK_RATE_LIMIT) → 429; the concurrency cap
  * lives in the service (AskBusyError → 429 before the stream opens).
+ *
+ * History is per SERVER, not per user: every client of this server can list,
+ * read and continue every thread (questions and highlights included). It is
+ * not a privacy boundary — see docs/CONFIGURATION.md.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -28,16 +32,18 @@ const router = Router();
 
 // ----------------------------------------------------------------------------
 // Rate limit: fixed window per client (ip), separate buckets for prepares
-// (cheap, fired on every chip click) and asks (an LLM call each).
+// (cheap, fired on every chip click), asks (an LLM call each) and history
+// reads (synchronous JSONL parsing on the event loop).
 // ----------------------------------------------------------------------------
 
-export const ASK_RATE_LIMIT = { windowMs: 60_000, asks: 20, prepares: 60 } as const;
-const buckets = new Map<string, { windowStart: number; asks: number; prepares: number }>();
+export const ASK_RATE_LIMIT = { windowMs: 60_000, asks: 20, prepares: 60, reads: 120 } as const;
+type RateKind = 'asks' | 'prepares' | 'reads';
+const buckets = new Map<string, { windowStart: number } & Record<RateKind, number>>();
 
-export function checkRateLimit(client: string, kind: 'asks' | 'prepares', now = Date.now()): { ok: boolean; retryAfterSec: number } {
+export function checkRateLimit(client: string, kind: RateKind, now = Date.now()): { ok: boolean; retryAfterSec: number } {
   let b = buckets.get(client);
   if (!b || now - b.windowStart >= ASK_RATE_LIMIT.windowMs) {
-    b = { windowStart: now, asks: 0, prepares: 0 };
+    b = { windowStart: now, asks: 0, prepares: 0, reads: 0 };
     buckets.set(client, b);
   }
   if (b[kind] >= ASK_RATE_LIMIT[kind]) {
@@ -50,7 +56,7 @@ export function checkRateLimit(client: string, kind: 'asks' | 'prepares', now = 
 /** Test hook. @internal */
 export function resetRateLimit(): void { buckets.clear(); }
 
-function rateLimited(kind: 'asks' | 'prepares') {
+function rateLimited(kind: RateKind) {
   return (req: Request, res: Response, next: NextFunction) => {
     const r = checkRateLimit(req.ip || 'unknown', kind);
     if (!r.ok) {
@@ -111,7 +117,8 @@ router.post('/api/ask', requireEnabled, rateLimited('asks'), (req: Request, res:
     res.setHeader('Retry-After', '15');
     return res.status(429).json({ error: new AskBusyError(resolveAskSettings().maxConcurrent).message });
   }
-  debug('AskAPI', 'question:', body.question.slice(0, 80), 'route:', body.pageContext.route, 'session:', body.sessionId ?? '(new)');
+  // Never log the question itself (it can carry pasted secrets / investigation details).
+  debug('AskAPI', 'ask', body.sessionId ? 'follow-up' : 'new', 'session:', body.sessionId ?? '(new)', 'route:', body.pageContext.route, 'question chars:', body.question.length, 'selections:', body.selections?.length ?? 0);
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -145,14 +152,14 @@ router.post('/api/ask/prepare', requireEnabled, rateLimited('prepares'), async (
   const err = validatePage(req.body);
   if (err) return res.status(400).json({ error: err });
   try {
-    const result = await prepareAsk({ pageContext: req.body.pageContext, selections: req.body.selections, modelId: req.body.modelId });
+    const result = await prepareAsk({ pageContext: req.body.pageContext, selections: req.body.selections });
     res.json(result);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-router.get('/api/ask/sessions', requireEnabled, async (req: Request, res: Response) => {
+router.get('/api/ask/sessions', requireEnabled, rateLimited('reads'), async (req: Request, res: Response) => {
   try {
     const route = typeof req.query.route === 'string' ? req.query.route : undefined;
     const limit = typeof req.query.limit === 'string' ? Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 200)) : undefined;
@@ -163,7 +170,7 @@ router.get('/api/ask/sessions', requireEnabled, async (req: Request, res: Respon
   }
 });
 
-router.get('/api/ask/sessions/:id', requireEnabled, async (req: Request, res: Response) => {
+router.get('/api/ask/sessions/:id', requireEnabled, rateLimited('reads'), async (req: Request, res: Response) => {
   try {
     const session = (await getAskSessionStore()).get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Ask session not found' });
