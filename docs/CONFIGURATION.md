@@ -434,14 +434,27 @@ the credentials the server already has: with AWS credentials for Bedrock
 (`AWS_PROFILE` / keys — the same ones the LLM judge needs) it works out of the
 box and picks the newest credentialed Claude. A `~/.pi/agent/` setup is honoured
 when present but not required. Without any credentialed model the first
-question answers with a clear error.
+question answers with a clear error. Bedrock calls sign with the profile's
+**current** keys: a rotated `~/.aws/credentials` is picked up within about a
+minute without a restart, on open threads too (the same refreshing provider as
+the rest of the server). A pinned `model` that is not in the credentialed
+registry is an error on the first question, never a silent fallback to another
+model; `provider/id` pins match that provider only.
 
-**Threads are pi sessions, stored locally.** Each thread is a standard pi
-session file (pi JSONL) under `.agent-health/ask-sessions/` on **this** server —
-not in the shared storage cluster, and not in `~/.pi/agent/sessions/` (so they
-don't appear in your pi sidebar). The panel's history is therefore per server;
-another laptop or server has its own list. A follow-up re-opens the file, so
-threads survive a restart.
+**Threads are pi sessions, stored on this server — shared by everyone using
+it.** Each thread is a standard pi session file (pi JSONL) under
+`.agent-health/ask-sessions/` on **this** server — not in the shared storage
+cluster, and not in `~/.pi/agent/sessions/` (so they don't appear in your pi
+sidebar). The panel's history is therefore per server; another laptop or server
+has its own list. A follow-up re-opens the file, so threads survive a restart.
+History is **not per user**: like the rest of the REST API there is no
+authentication, so every client of a team server can list, read and continue
+every thread, including the questions typed and the text highlighted. Treat the
+directory like the rest of the server's data — put a shared server behind your
+deployment's authentication, or run the assistant on a personal server. There
+is no automatic retention: delete files from the directory to prune history
+(each file is one thread; the panel's list reflects the directory on the next
+refresh).
 
 ```ts
 export default {
@@ -450,6 +463,9 @@ export default {
     model: 'us.anthropic.claude-sonnet-4-6',         // pin the LLM (bare or provider-qualified id); default: newest credentialed Claude
     sessionsDir: '.agent-health/ask-sessions',       // pi session files; relative to the server cwd
     maxConcurrent: 4,                                // questions answered at once; extra requests get 429
+    toolTimeoutMs: 30_000,                           // one tool lookup against this server's API
+    turnTimeoutMs: 240_000,                          // one whole answer (model calls + lookups); then it is cut off with an error
+    maxToolCalls: 30,                                // lookups one answer may make before it is cut off
   },
 };
 ```
@@ -458,15 +474,23 @@ export default {
 |----------|-------------|---------|
 | `AH_ASK_MODEL_ID` | Pin the assistant's LLM (overrides `assistant.model`) | newest credentialed Claude |
 | `AH_ASK_SESSIONS_DIR` | Directory for the pi session files (overrides `assistant.sessionsDir`) | `.agent-health/ask-sessions` |
+| `AH_ASK_TOOL_TIMEOUT_MS` | Deadline for one tool lookup (overrides `assistant.toolTimeoutMs`) | `30000` |
+| `AH_ASK_TURN_TIMEOUT_MS` | Wall-clock budget for one answer (overrides `assistant.turnTimeoutMs`) | `240000` |
+| `AH_ASK_MAX_TOOL_CALLS` | Most lookups per answer (overrides `assistant.maxToolCalls`) | `30` |
+
+Closing the popover / panel or clicking **Stop** aborts the turn on the server,
+including a lookup that is still waiting on the API; a turn that exhausts its
+budget ends with an error that says so, and a model call that fails mid-thread
+is reported as an error on that turn (never as a re-run of the previous answer).
 
 `/api/ask*` sits behind the same (absent) authentication as the rest of the
-REST API — it exposes no data the API doesn't already expose, but every
-question is an LLM call, so it is rate-limited per client address (20 questions
-and 60 prepares per minute; behind a reverse proxy without `trust proxy` all
-users share the proxy's address and therefore one bucket) and capped by
-`maxConcurrent`. Put the server behind your
-deployment's authentication like the rest of Agent Health, or set
-`assistant.enabled: false`.
+REST API. Beyond what the API already exposes it persists the questions and
+highlights of every thread (see above), and every question is an LLM call, so it
+is rate-limited per client address (20 questions, 60 prepares and 120 history
+reads per minute; behind a reverse proxy without `trust proxy` all users share
+the proxy's address and therefore one bucket) and capped by `maxConcurrent`. Put
+the server behind your deployment's authentication like the rest of Agent
+Health, or set `assistant.enabled: false`.
 
 ## Where the server looks for eval source files (`evalRoots`)
 
