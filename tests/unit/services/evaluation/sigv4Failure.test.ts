@@ -70,8 +70,16 @@ describe('aws-sigv4 credential failure → failed report', () => {
     const report = await runEvaluationWithConnector(agent, 'm', testCase, jest.fn(), { registry });
 
     expect(report.status).toBe('failed');
-    expect(report.llmJudgeReasoning).toBe(
-      'Evaluation failed: SigV4 signing failed: Could not load credentials from any providers (profile nonexistent-profile / region us-west-2 / service execute-api)'
+    // The signing error is an AGENT-stage failure (the request was never
+    // sent): the structured failure fields carry the SigV4 reason verbatim and
+    // the reasoning names the stage instead of blaming the evaluator.
+    expect((report as any).failureStage).toBe('agent');
+    expect((report as any).error).toContain(
+      'SigV4 signing failed: Could not load credentials from any providers (profile nonexistent-profile / region us-west-2 / service execute-api)'
+    );
+    expect(report.llmJudgeReasoning).toContain('Agent request failed — not judged.');
+    expect(report.llmJudgeReasoning).toContain(
+      'SigV4 signing failed: Could not load credentials from any providers (profile nonexistent-profile / region us-west-2 / service execute-api)'
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });

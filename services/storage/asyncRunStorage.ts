@@ -27,6 +27,7 @@ import type {
   ConnectorProtocol,
 } from '@/types';
 import { fetchChunked } from '@/lib/chunkedFetch';
+import { copyReportFailureFields } from '@/lib/reportFailureFields';
 
 // Re-export search types for convenience
 export interface SearchQuery {
@@ -197,6 +198,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceFetchAttempts: storedAny.traceFetchAttempts,
     lastTraceFetchAt: storedAny.lastTraceFetchAt,
     traceError: storedAny.traceError,
+    // Failure detail (failureStage / error / agentError / judgeError).
+    ...copyReportFailureFields(storedAny, {} as Record<string, unknown>),
     judgeMode: storedAny.judgeMode,
     spans: storedAny.spans as any[] | undefined,
     connectorProtocol: storedAny.connectorProtocol as ConnectorProtocol | undefined,
@@ -257,6 +260,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
+  copyReportFailureFields(report as Record<string, any>, base as Record<string, any>);
   if ((report as any).judgeMode !== undefined) (base as any).judgeMode = (report as any).judgeMode;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
@@ -398,6 +402,9 @@ class AsyncRunStorage {
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
       'judgeModelId', 'judgeModel', 'judgeProvider', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
       'scoringSnapshot',
+      // Failure stage so list rows can badge 'Agent error' vs 'Judge error'
+      // without loading the full report (tiny keyword field).
+      'failureStage',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
@@ -476,6 +483,7 @@ class AsyncRunStorage {
     if (updates.traceFetchAttempts !== undefined) storageUpdates.traceFetchAttempts = updates.traceFetchAttempts;
     if (updates.lastTraceFetchAt !== undefined) storageUpdates.lastTraceFetchAt = updates.lastTraceFetchAt;
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
+    copyReportFailureFields(updates as Record<string, any>, storageUpdates);
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
     if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
     if (updates.judgeModel !== undefined) storageUpdates.judgeModel = updates.judgeModel;

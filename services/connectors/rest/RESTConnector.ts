@@ -10,6 +10,8 @@
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
+import { fetchWithTimeout, resolveConnectorTimeoutMs } from '@/services/connectors/base/fetchWithTimeout';
+import { AgentRequestError } from '@/services/evaluation/agentFailure';
 import type {
   ConnectorAuth,
   ConnectorRequest,
@@ -59,16 +61,32 @@ export class RESTConnector extends BaseConnector {
     // after any beforeRequest hook, which ran before execute()).
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
+    // Explicit request timeout (default = undici's silent 300 s). Configure
+    // per agent via `connectorConfig.timeoutMs`. See fetchWithTimeout.ts.
+    const timeoutMs = resolveConnectorTimeoutMs(request.connectorConfig);
 
     this.debug('Executing REST request');
     this.debug('Endpoint:', endpoint);
+    this.debug('Timeout (ms):', timeoutMs);
     this.debug('Payload:', body.substring(0, 500));
 
-    const response = await this.fetchSigned(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
+    // Signed request through the timeout; an AWS credential rejection is
+    // replayed once inside fetchSigned (each attempt gets the full timeout).
+    const startedAt = Date.now();
+    const response = await this.fetchSigned(
+      auth,
+      { method: 'POST', url: endpoint, body, defaultHeaders },
+      { fetchImpl: (url, init) => fetchWithTimeout(url, { ...init, timeoutMs, connectorType: this.type }) }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`REST request failed: ${response.status} - ${errorText}`);
+      throw new AgentRequestError(`REST request failed: ${response.status} - ${errorText}`, {
+        endpoint,
+        elapsedMs: Date.now() - startedAt,
+        timeoutMs,
+        httpStatus: response.status,
+      });
     }
 
     const data = await response.json();
