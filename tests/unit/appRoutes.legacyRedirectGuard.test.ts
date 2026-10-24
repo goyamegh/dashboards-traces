@@ -16,8 +16,10 @@
  * text — is asserted:
  *
  *   (a) the final location is the evals3 twin,
- *   (b) it got there with a REPLACE (history action `REPLACE`, and going back
- *       does not return to the legacy URL — there is no back entry),
+ *   (b) it got there with a REPLACE: the history is seeded with a sentinel
+ *       entry BEFORE the legacy URL, and going back must land on that
+ *       sentinel — a PUSH would leave the legacy URL in the stack, so Back
+ *       would hit it and bounce to the destination again instead,
  *   (c) no page component ever rendered at the legacy pathname.
  *
  * The second block enumerates EVERY registered route pattern: anything that is
@@ -31,7 +33,7 @@
 import * as React from 'react';
 import { render, waitFor, act } from '@testing-library/react';
 import {
-  MemoryRouter, createRoutesFromChildren, matchRoutes, useLocation, useNavigate, useNavigationType,
+  MemoryRouter, createRoutesFromChildren, useLocation, useNavigate, useNavigationType,
 } from 'react-router-dom';
 import type { RouteObject } from 'react-router-dom';
 
@@ -49,7 +51,8 @@ const stub = (name: string) => ({
       'RunInspectorPage', 'NewRunPage', 'Layout',
     ].map(exportName => [exportName, function Page() {
       const loc = useLocation();
-      pageRenders.push({ page: name, pathname: loc.pathname });
+      // Recorded on commit (not during render) so abandoned renders don't count.
+      React.useEffect(() => { pageRenders.push({ page: name, pathname: loc.pathname }); }, [loc.pathname]);
       return React.createElement('div', { 'data-testid': `page-${name}` }, loc.pathname + loc.search);
     }]),
   ),
@@ -101,7 +104,8 @@ function appRouteObjects(): RouteObject[] {
 function registeredPatterns(routes: RouteObject[], prefix = ''): string[] {
   const out: string[] = [];
   for (const r of routes) {
-    const path = r.path === undefined ? prefix : (r.path.startsWith('/') ? r.path : `${prefix}/${r.path}`);
+    const raw = r.path === undefined ? prefix : (r.path.startsWith('/') ? r.path : `${prefix}/${r.path}`);
+    const path = raw.replace(/\/{2,}/g, '/');
     if (r.path !== undefined || r.index) out.push(path === '/*' ? '*' : (path || '/'));
     if (r.children) out.push(...registeredPatterns(r.children, path));
   }
@@ -116,6 +120,9 @@ function sampleUrl(pattern: string): string {
     .replace(/\/\*$/, '/deeper/path');
 }
 
+/** Seeded as the history entry BEFORE the visited URL (where Back must land). */
+const SENTINEL = '/__guard-sentinel__';
+
 interface Landing {
   pathname: string;
   search: string;
@@ -125,6 +132,9 @@ interface Landing {
   afterBack: { pathname: string; search: string };
 }
 
+/** Every POP (back/forward) location the probe observed, in order. */
+const backTargets: Array<{ pathname: string; search: string }> = [];
+
 /** Observes the router from inside the tree (location, last action) and exposes `navigate`. */
 function makeProbe() {
   const state = {
@@ -133,10 +143,14 @@ function makeProbe() {
   };
   function Probe() {
     const loc = useLocation();
+    const action = useNavigationType();
     state.pathname = loc.pathname;
     state.search = loc.search;
-    state.historyAction = useNavigationType();
+    state.historyAction = action;
     state.navigate = useNavigate();
+    React.useEffect(() => {
+      if (action === 'POP') backTargets.push({ pathname: loc.pathname, search: loc.search });
+    }, [action, loc.pathname, loc.search]);
     return null;
   }
   return { state, Probe };
@@ -147,7 +161,7 @@ async function visit(url: string): Promise<Landing> {
   pageRenders.length = 0;
   const { state, Probe } = makeProbe();
   const view = render(
-    React.createElement(MemoryRouter, { initialEntries: [url] },
+    React.createElement(MemoryRouter, { initialEntries: [SENTINEL, url], initialIndex: 1 },
       React.createElement(Probe), React.createElement(AppRoutes)),
   );
   // Redirects (sync `<Navigate>` or the async report lookup) settle once a
@@ -156,8 +170,13 @@ async function visit(url: string): Promise<Landing> {
     expect(pageRenders.some(p => p.pathname === state.pathname)).toBe(true);
   }, { timeout: 4000 });
   const { pathname, search, historyAction } = state;
+  // Go back ONE entry. After a proper REPLACE the entry before the landing is
+  // the sentinel. The sentinel itself matches the `*` catch-all, so read the
+  // location the back navigation produced (what `backTargets` recorded) rather
+  // than whatever the catch-all redirects to afterwards.
+  backTargets.length = 0;
   await act(async () => { state.navigate!(-1); });
-  const afterBack = { pathname: state.pathname, search: state.search };
+  const afterBack = backTargets[0] ?? { pathname: state.pathname, search: state.search };
   view.unmount();
   return { pathname, search, historyAction, afterBack };
 }
@@ -168,11 +187,11 @@ function expectReplaceRedirect(from: string, landed: Landing) {
   // (a) landed on an evals3 page, somewhere other than the legacy URL
   expect(landed.pathname).not.toBe(fromPath);
   expect(landed.pathname).toMatch(/^\/evaluations\//);
-  // (b) REPLACE: the router's last action was a replace, and going back does
-  //     not return to the legacy URL (no back entry was created)
+  // (b) REPLACE: the router's last action was a replace, and Back lands on the
+  //     sentinel seeded before the legacy URL — not on the legacy URL (a PUSH
+  //     would leave it in the stack and Back would bounce through it again)
   expect(landed.historyAction).toBe('REPLACE');
-  expect(landed.afterBack.pathname).toBe(landed.pathname);
-  expect(landed.afterBack.pathname).not.toBe(fromPath);
+  expect(landed.afterBack.pathname).toBe(SENTINEL);
   // (c) no page component ever rendered at the legacy pathname
   expect(pageRenders.filter(p => p.pathname === fromPath)).toEqual([]);
 }
@@ -236,18 +255,10 @@ describe('GUARD — every retired legacy route is a <Navigate replace> to its ev
     expect(patterns).toContain('/runs/:runId');
   });
 
-  it('no retired URL is claimed by a route that renders a page (the matched route is the redirect)', () => {
-    const routes = appRouteObjects();
-    for (const [from] of RETIRED_ROUTES) {
-      const matches = matchRoutes(routes, from);
-      expect(matches).not.toBeNull();
-      const leaf = matches![matches!.length - 1];
-      // A page stub is a function component; the redirects are <Navigate>
-      // (element type Navigate) / <LegacyRedirect> / <ReportRedirect>.
-      const el = leaf.route.element as React.ReactElement<unknown, { name?: string }>;
-      const typeName = typeof el.type === 'function' ? el.type.name : String(el.type);
-      expect(['Navigate', 'LegacyRedirect', 'ReportRedirect']).toContain(typeName);
-    }
+  it('no route pattern is registered twice (a later duplicate would be unreachable dead code, an earlier one a regression)', () => {
+    const patterns = registeredPatterns(appRouteObjects());
+    const dupes = patterns.filter((p, i) => patterns.indexOf(p) !== i);
+    expect(dupes).toEqual([]);
   });
 });
 
@@ -271,6 +282,7 @@ describe('GUARD — no registered route outside /evaluations/* renders a page un
       const landed = await visit(from);
       expect(landed.pathname).toBe(from);
       expect(landed.historyAction).toBe('POP');
+      expect(landed.afterBack.pathname).toBe(SENTINEL);
       expect(pageRenders.some(p => p.pathname === from)).toBe(true);
     }
   });
@@ -279,6 +291,6 @@ describe('GUARD — no registered route outside /evaluations/* renders a page un
     const landed = await visit('/no/such/route');
     expect(landed.pathname).toBe('/');
     expect(landed.historyAction).toBe('REPLACE');
-    expect(landed.afterBack.pathname).toBe('/');
+    expect(landed.afterBack.pathname).toBe(SENTINEL);
   });
 });

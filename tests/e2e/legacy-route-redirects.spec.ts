@@ -210,15 +210,16 @@ test.describe('Retired legacy routes redirect to their evals3 twin', () => {
     });
   }
 
-  // Same REPLACE property for the fixture-backed redirects (fresh page each).
-  async function expectReplaceRedirect(page: import('@playwright/test').Page, from: string, to: string) {
+  // Same REPLACE property for the fixture-backed redirects. Only the Back
+  // sentinel is asserted here (not `history.length`): once a page has gone
+  // back, the next forward navigation truncates the stack, so the length
+  // arithmetic is only meaningful on a fresh page.
+  async function expectReplaceRedirect(page: import('@playwright/test').Page, from: string, to: string | RegExp) {
     await page.goto('/settings');
     await expect(page.locator('[data-testid="sidebar"]')).toBeVisible({ timeout: 30000 });
-    const before = await page.evaluate(() => window.history.length);
 
     await page.goto(from);
     await page.waitForURL(to, { timeout: 15000 });
-    expect(await page.evaluate(() => window.history.length)).toBe(before + 1);
 
     await page.goBack();
     await page.waitForURL(/\/settings$/, { timeout: 15000 });
@@ -240,6 +241,26 @@ test.describe('Retired legacy routes redirect to their evals3 twin', () => {
   test('/test-cases/:id/runs redirects with a REPLACE', async ({ page }) => {
     test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
     await expectReplaceRedirect(page, `/test-cases/${testCaseId}/runs`, `**/evaluations/test-cases/${testCaseId}`);
+  });
+
+  test('/benchmarks/:id/runs and /experiments/:id/runs redirect with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/benchmarks/${benchmarkId}/runs`, `**/evaluations/benchmarks/${benchmarkId}/runs`);
+    await expectReplaceRedirect(page, `/experiments/${benchmarkId}/runs`, `**/evaluations/benchmarks/${benchmarkId}/runs`);
+  });
+
+  test('/evaluations/runs/:runId (older detail page) and the bare /evaluations/benchmarks/:id/runs/:runId redirect with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/evaluations/runs/${RUN_ID}?reportId=${RUN_REPORT_ID}`,
+      `**/evaluations/runs/${RUN_ID}/inspect?reportId=${RUN_REPORT_ID}`);
+    await expectReplaceRedirect(page, `/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID}`,
+      `**/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID}/inspect`);
+  });
+
+  test('/runs/:reportId for a standalone report and for an unknown report redirect with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/runs/${STANDALONE_REPORT_ID}`, `**/evaluations/test-cases/${testCaseId}?run=${STANDALONE_REPORT_ID}`);
+    await expectReplaceRedirect(page, `/runs/does-not-exist-${stamp}`, /\/evaluations\/runs\/?$/);
   });
 
   test('re-running from the inspector lands on the NEW run\'s inspector (not the retired detail page)', async ({ page }) => {
