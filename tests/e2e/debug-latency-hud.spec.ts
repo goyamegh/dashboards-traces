@@ -155,7 +155,7 @@ test.describe('Debug latency HUD', () => {
     await expect(panel).not.toContainText(/Last \d+ navigations|prev page|● benchmarks/);
   });
 
-  test('expanded view: plain-language rows, the slowest requests, API wall span ≤ page ready, no legend, steps only when recorded', async ({ page, request }) => {
+  test('expanded view: plain-language rows, the slowest requests, no /api/debug noise, no legend, steps only when recorded', async ({ page, request }) => {
     await request.post('/api/debug', { data: { enabled: true } });
     await page.addInitScript(() => {
       window.localStorage.setItem('agenteval_debug', 'true');
