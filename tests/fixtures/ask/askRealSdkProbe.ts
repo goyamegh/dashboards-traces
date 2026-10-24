@@ -50,7 +50,9 @@ interface Outcome { answer?: string; error?: string; deltas: string[]; tools: st
 async function main(): Promise<void> {
   const fake = await startFakeBedrock();
   const held: Array<{ closed: boolean }> = [];
+  let apiHits = 0;
   const api = http.createServer((req, res) => {
+    apiHits += 1;
     if (req.url?.includes('/held')) { const h = { closed: false }; req.on('close', () => { h.closed = true; }); held.push(h); return; }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ run: { id: 'ok', passFailStatus: 'passed' } }));
@@ -165,8 +167,19 @@ async function main(): Promise<void> {
     fake.script({ kind: 'toolUse', name: 'get_report', input: { reportId: 'ok' } });
     const p3 = await prepareAsk({ pageContext: page });
     const requestsBefore = fake.requests.length;
+    const hitsBefore = apiHits;
     const b = await ask({ question: 'loop', pageContext: page, sessionId: p3.sessionId }).done;
-    report('toolBudget', { error: b.error, answer: b.answer, toolStarts: b.tools.filter((t) => t.endsWith(':start')).length, modelCalls: fake.requests.length - requestsBefore, inFlight: askInFlight() });
+    report('toolBudget', { error: b.error, answer: b.answer, lookupsDispatched: apiHits - hitsBefore, toolStarts: b.tools.filter((t) => t.endsWith(':start')).length, modelCalls: fake.requests.length - requestsBefore, inFlight: askInFlight() });
+
+    // ---------------------------------------------------------------- tool budget, PARALLEL batch: five calls in ONE model response (pi runs them concurrently)
+    fake.script({ kind: 'toolUse', name: 'get_report', input: { reportId: 'ok' }, calls: Array.from({ length: 5 }, (_, i) => ({ name: 'get_report', input: { reportId: `ok-${i}` } })) });
+    const p3b = await prepareAsk({ pageContext: page });
+    const hitsBefore2 = apiHits;
+    const requestsBefore2 = fake.requests.length;
+    const bb = await ask({ question: 'batch', pageContext: page, sessionId: p3b.sessionId }).done;
+    // what the model got back for the five calls of the first batch
+    const batchResults = fake.requests.slice(requestsBefore2 + 1, requestsBefore2 + 2).flatMap((r) => r.messages.filter((m: any) => m.role === 'user').flatMap((m: any) => m.content.filter((c: any) => c.toolResult).map((c: any) => (c.toolResult.content?.map((x: any) => x.text ?? '').join('').includes('budget exhausted') ? 'refused' : 'served'))));
+    report('toolBudgetBatch', { error: bb.error, answer: bb.answer, lookupsDispatched: apiHits - hitsBefore2, toolStarts: bb.tools.filter((t) => t.endsWith(':start')).length, batchResults, inFlight: askInFlight() });
 
     // ---------------------------------------------------------------- read-only enforcement
     const marker = join(cwd, 'should-never-exist.txt');
@@ -209,6 +222,31 @@ async function main(): Promise<void> {
     const duoDone = await Promise.all(duo.map((d) => d.done));
     const userMessagesAfter = readFileSync(file, 'utf-8').split('\n').filter((l) => l.includes('"role":"user"')).length;
     report('coldResume', { answers: duoDone.map((d) => d.answer ?? null), errors: duoDone.map((d) => d.error ?? null), newUserMessages: userMessagesAfter - userMessagesBefore, inFlight: askInFlight() });
+
+    // ---------------------------------------------------------------- compaction mid-turn: pi rewrites session.messages, the terminal error must still win
+    // Twelve substantial earlier turns, then: tool prelude → context-overflow 400 → pi's default
+    // auto-compaction (summarization requests) → the retried call fails with a non-retryable 400.
+    fake.script({ kind: 'text', text: 'warmup '.repeat(2000) });
+    const p6 = await prepareAsk({ pageContext: page });
+    for (let i = 0; i < 12; i++) await ask({ question: `warmup ${i}`, pageContext: page, sessionId: p6.sessionId }).done;
+    let compactionStep = 0;
+    const compactionBefore = fake.requests.length;
+    fake.script((request) => {
+      compactionStep += 1;
+      if (request.system.includes('context summarization assistant')) return { kind: 'text', text: 'Conversation summary: the user asked about a report.' };
+      if (compactionStep === 1) return { kind: 'toolUse', name: 'get_report', input: { reportId: 'oversized' }, preludeText: 'Let me inspect that.' };
+      if (compactionStep === 2) return { kind: 'http400', message: 'prompt is too long: 1000001 tokens > 1000000 maximum' };
+      return { kind: 'http400', message: 'synthetic failure after compaction' };
+    });
+    const cr = await ask({ question: 'inspect huge report', pageContext: page, sessionId: p6.sessionId }).done;
+    const compactionDetail = (await getAskSessionStore()).get(p6.sessionId);
+    report('compaction', {
+      answer: cr.answer, error: cr.error, deltas: cr.deltas, modelCalls: compactionStep,
+      summarized: fake.requests.slice(compactionBefore).some((r) => r.system.includes('context summarization assistant')),
+      requestMessageCounts: fake.requests.slice(compactionBefore).map((r) => r.messages.length),
+      lastRecorded: compactionDetail?.turns.at(-1) && { q: compactionDetail.turns.at(-1)!.question, answer: compactionDetail.turns.at(-1)!.answer, error: compactionDetail.turns.at(-1)!.error },
+      turnCount: compactionDetail?.turnCount,
+    });
   } finally {
     await fake.close();
     api.close();

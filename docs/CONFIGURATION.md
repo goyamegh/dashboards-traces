@@ -484,8 +484,12 @@ budget ends with an error that says so, and a model call that fails mid-thread
 is reported as an error on that turn (never as a re-run of the previous answer).
 An abort is cooperative (pi waits for the provider / lookup to honour it); if a
 cancelled turn has not stopped after 15 s (`AH_ASK_ABORT_GRACE_MS`) its
-concurrency slot is reclaimed anyway and the thread is dropped from memory — the
-next question re-opens it from its file.
+concurrency slot is reclaimed anyway, but the thread stays locked ("still
+answering") until that turn really settles — a second writer is never opened on
+a thread's file. `maxToolCalls` is enforced before a lookup is dispatched: when
+one model response asks for more lookups than the budget has left, the extra
+calls are refused with an error the model can read, and a response that asks for
+lookups once the budget is spent ends the turn.
 
 `/api/ask*` sits behind the same (absent) authentication as the rest of the
 REST API. Beyond what the API already exposes it persists the questions and

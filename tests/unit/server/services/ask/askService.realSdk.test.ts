@@ -27,7 +27,9 @@ type Probe = {
   failedFollowUp: { firstAnswer: string; httpError: { answer?: string; error?: string; deltas: string[] }; dropped: { answer?: string; error?: string; deltas: string[] }; recorded: Array<{ q: string; answer: string; error?: string }> };
   toolAbort: { heldSeen: boolean; inFlightDuring: number; freed: boolean; slotFreedMs: number; lookupClosed: boolean | null; settled: boolean; tools: string[] };
   toolAbortReuse: { answer?: string; error?: string };
-  toolBudget: { error?: string; answer?: string; toolStarts: number; modelCalls: number; inFlight: number };
+  toolBudget: { error?: string; answer?: string; lookupsDispatched: number; toolStarts: number; modelCalls: number; inFlight: number };
+  toolBudgetBatch: { error?: string; answer?: string; lookupsDispatched: number; toolStarts: number; batchResults: string[]; inFlight: number };
+  compaction: { answer?: string; error?: string; deltas: string[]; modelCalls: number; summarized: boolean; requestMessageCounts: number[]; lastRecorded?: { q: string; answer: string; error?: string }; turnCount?: number };
   readOnly: { offered: string[]; expected: string[]; toolResults: Array<{ status: string; text: string }>; markerExists: boolean; answer?: string; error?: string; tools: string[] };
   exclusivity: { refusedEarly: string[]; heldWhileRefused: number; inFlightHeld: number; answers: Array<string | null>; errors: Array<string | null>; after?: string; inFlightAfter: number };
   coldResume: { answers: Array<string | null>; errors: Array<string | null>; newUserMessages: number; inFlight: number };
@@ -88,9 +90,29 @@ describe('askService on the real pi SDK + real AWS SDK (scripted local Bedrock, 
     if (skip()) return;
     expect(r.toolBudget.error).toBe('The assistant stopped after 3 tool lookups (assistant.maxToolCalls).');
     expect(r.toolBudget.answer).toBeUndefined();
-    expect(r.toolBudget.toolStarts).toBe(3); // exactly the budget: the 4th lookup never starts
+    expect(r.toolBudget.lookupsDispatched).toBe(3); // exactly the budget reached this server's API; the 4th was refused before dispatch
     expect(r.toolBudget.modelCalls).toBeLessThanOrEqual(4);
     expect(r.toolBudget.inFlight).toBe(0);
+  });
+
+  it('HIGH 4 — turn budget holds for a PARALLEL batch: five lookups in one model response → three served, two refused before dispatch; the next over-budget response ends the turn', () => {
+    if (skip()) return;
+    expect(r.toolBudgetBatch.lookupsDispatched).toBe(3);
+    expect(r.toolBudgetBatch.batchResults).toEqual(['served', 'served', 'served', 'refused', 'refused']);
+    expect(r.toolBudgetBatch.error).toBe('The assistant stopped after 3 tool lookups (assistant.maxToolCalls).');
+    expect(r.toolBudgetBatch.answer).toBeUndefined();
+    expect(r.toolBudgetBatch.inFlight).toBe(0);
+  });
+
+  it('HIGH 2 — auto-compaction mid-turn (pi rewrites session.messages) does not turn a terminal provider error into the prelude text as a success', () => {
+    if (skip()) return;
+    expect(r.compaction.summarized).toBe(true); // pi really compacted: summarization requests were made
+    expect(Math.min(...r.compaction.requestMessageCounts)).toBeLessThan(Math.max(...r.compaction.requestMessageCounts)); // the history shrank mid-turn
+    expect(r.compaction.error).toBe('Validation error: synthetic failure after compaction');
+    expect(r.compaction.answer).toBeUndefined();
+    expect(r.compaction.deltas[0]).toBe('Let me inspect that.'); // what streamed before the failure stays visible to the client
+    expect(r.compaction.lastRecorded).toEqual({ q: 'inspect huge report', answer: 'Let me inspect that.', error: 'Validation error: synthetic failure after compaction' });
+    expect(r.compaction.turnCount).toBe(13); // 12 warm-ups + the failed one, persisted as failed
   });
 
   it('MEDIUM — read-only enforcement with real tool dispatch: `bash` and `write` requested by the model are refused by pi, nothing is written, exactly ASK_TOOLS were offered', () => {

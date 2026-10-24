@@ -24,7 +24,8 @@ import { fromUtf8, toUtf8 } from '@smithy/util-utf8';
 
 export type BedrockScript =
   | { kind: 'text'; text: string }
-  | { kind: 'toolUse'; name: string; input: Record<string, unknown>; toolUseId?: string }
+  /** One tool call, or a BATCH (`calls`) the model requests in one response — pi executes a batch in parallel. `preludeText` = text before the call(s). */
+  | { kind: 'toolUse'; name: string; input: Record<string, unknown>; toolUseId?: string; calls?: Array<{ name: string; input: Record<string, unknown> }>; preludeText?: string }
   | { kind: 'http400'; message: string }
   | { kind: 'partialThenDrop'; text: string }
   | { kind: 'hold' };
@@ -81,9 +82,20 @@ function writeScript(res: http.ServerResponse, s: Exclude<BedrockScript, { kind:
     res.write(event('contentBlockStop', { contentBlockIndex: 0 }));
     res.write(event('messageStop', { stopReason: 'end_turn' }));
   } else {
-    res.write(event('contentBlockStart', { contentBlockIndex: 0, start: { toolUse: { toolUseId: s.toolUseId ?? `tu-${Date.now().toString(36)}`, name: s.name } } }));
-    res.write(event('contentBlockDelta', { contentBlockIndex: 0, delta: { toolUse: { input: JSON.stringify(s.input) } } }));
-    res.write(event('contentBlockStop', { contentBlockIndex: 0 }));
+    let index = 0;
+    if (s.preludeText) {
+      res.write(event('contentBlockStart', { contentBlockIndex: index, start: {} }));
+      res.write(event('contentBlockDelta', { contentBlockIndex: index, delta: { text: s.preludeText } }));
+      res.write(event('contentBlockStop', { contentBlockIndex: index }));
+      index += 1;
+    }
+    const calls = s.calls ?? [{ name: s.name, input: s.input }];
+    for (const call of calls) {
+      res.write(event('contentBlockStart', { contentBlockIndex: index, start: { toolUse: { toolUseId: s.toolUseId && calls.length === 1 ? s.toolUseId : `tu-${Date.now().toString(36)}-${index}`, name: call.name } } }));
+      res.write(event('contentBlockDelta', { contentBlockIndex: index, delta: { toolUse: { input: JSON.stringify(call.input) } } }));
+      res.write(event('contentBlockStop', { contentBlockIndex: index }));
+      index += 1;
+    }
     res.write(event('messageStop', { stopReason: 'tool_use' }));
   }
   res.write(event('metadata', { usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, metrics: { latencyMs: 1 } }));

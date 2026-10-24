@@ -44,9 +44,12 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     sessionCreate = jest.fn(() => fakeSm);
     sessionOpen = jest.fn(() => ({ ...fakeSm, getSessionId: () => 'ask-from-disk', getEntries: () => [{ type: 'custom', customType: 'agent-health.ask', data: { page: { route: '/runs/report-1' }, selections: [], createdAt: 'x' } }, { type: 'custom', customType: 'agent-health.ask.turn', data: { id: 't0', question: 'earlier', answer: 'said', selections: [], startedAt: 'x', toolCalls: [] } }] }));
     // Real-shaped pi session: `prompt()` APPENDS the user message and the turn's assistant
-    // message(s) to `messages` (pi persists them as it goes); earlier turns stay in the array.
+    // message(s) to `messages` (pi persists them as it goes) and emits `message_end` for each
+    // finished message to subscribers; earlier turns stay in the array.
     createAgentSession = jest.fn(async () => {
       const messages: any[] = [];
+      const listeners = new Set<(e: any) => void>();
+      const emit = (e: any) => { for (const l of listeners) l(e); };
       return {
         session: {
           messages,
@@ -54,9 +57,11 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
             prompted.push(p);
             messages.push({ role: 'user', content: [{ type: 'text', text: p }] });
             if (promptGate) await new Promise<void>((r) => { promptGate = r; });
-            messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'the answer' }] });
+            const m = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'the answer' }] };
+            messages.push(m);
+            emit({ type: 'message_end', message: m });
           }),
-          subscribe: jest.fn((l: any) => { l({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'the ' } }); l({ type: 'tool_execution_start', toolName: 'get_report' }); l({ type: 'tool_execution_end', toolName: 'get_report' }); return () => {}; }),
+          subscribe: jest.fn((l: any) => { listeners.add(l); l({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'the ' } }); l({ type: 'tool_execution_start', toolName: 'get_report' }); l({ type: 'tool_execution_end', toolName: 'get_report' }); return () => { listeners.delete(l); }; }),
         },
       };
     });
@@ -483,12 +488,15 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
         subscribe: jest.fn((l: any) => { listener = l; return () => { listener = null; }; }),
         prompt: jest.fn(async (p: string) => {
           messages.push({ role: 'user', content: [{ type: 'text', text: p }] });
-          if (script === 'ok') messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'First answer.' }] });
-          else if (script === 'error') messages.push({ role: 'assistant', stopReason: 'error', errorMessage: 'Validation error: synthetic failure', content: [] });
+          let m: any;
+          if (script === 'ok') m = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'First answer.' }] };
+          else if (script === 'error') m = { role: 'assistant', stopReason: 'error', errorMessage: 'Validation error: synthetic failure', content: [] };
           else if (script === 'partial') {
             listener?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Half an ' } });
-            messages.push({ role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up', content: [{ type: 'text', text: 'Half an ' }] });
-          } else messages.push({ role: 'assistant', stopReason: 'aborted', content: [] });
+            m = { role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up', content: [{ type: 'text', text: 'Half an ' }] };
+          } else m = { role: 'assistant', stopReason: 'aborted', content: [] };
+          messages.push(m);
+          listener?.({ type: 'message_end', message: m });
         }),
         abort: jest.fn(async () => {}),
       },
@@ -633,32 +641,85 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     }
   });
 
-  it('turn budget: more tool lookups than assistant.maxToolCalls aborts the turn with an error that says so; the slot is released', async () => {
+  it('turn budget: lookups are admitted BEFORE dispatch — a parallel batch beyond assistant.maxToolCalls has its extra calls refused, an over-budget follow-up response ends the turn; the slot is released', async () => {
     process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
-    mockConfig.mockReturnValue({ assistant: { maxToolCalls: 2 } });
+    mockConfig.mockReturnValue({ assistant: { maxToolCalls: 3 } });
     const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
     resetAskServiceState();
+    const http = require('http');
+    let hits = 0;
+    const server = http.createServer((_req: any, res: any) => { hits += 1; res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ run: { id: 'ok' } })); });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    process.env.AH_JUDGE_SERVER_URL = `http://127.0.0.1:${server.address().port}`;
     const sessionAbort = jest.fn(async () => {});
-    const messages: any[] = [];
-    createAgentSession.mockImplementationOnce(async () => ({
-      session: {
-        messages,
-        abort: sessionAbort,
-        subscribe: jest.fn((l: any) => {
-          // a model that keeps looking things up
-          for (let i = 0; i < 5; i++) { l({ type: 'tool_execution_start', toolName: 'get_report', args: { reportId: String(i) } }); l({ type: 'tool_execution_end', toolName: 'get_report' }); }
-          return () => {};
-        }),
-        prompt: jest.fn(async () => { messages.push({ role: 'assistant', stopReason: sessionAbort.mock.calls.length ? 'aborted' : 'stop', content: [{ type: 'text', text: 'looping' }] }); }),
+    const batchOutcomes: string[][] = [];
+    try {
+      // The fake agent loop runs the registered tools the way pi does: all calls of one model
+      // response in parallel, a `message_end` per model response, until aborted.
+      createAgentSession.mockImplementationOnce(async () => {
+        const messages: any[] = [];
+        let listener: any;
+        return {
+          session: {
+            messages,
+            abort: sessionAbort,
+            subscribe: jest.fn((l: any) => { listener = l; return () => {}; }),
+            prompt: jest.fn(async () => {
+              const tools: Record<string, any> = {};
+              resourceLoaderOpts.extensionFactories[0]({ registerTool: (d: any) => { tools[d.name] = d; } });
+              for (let step = 0; step < 3 && !sessionAbort.mock.calls.length; step++) {
+                listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse', content: [] } });
+                const batch = await Promise.all([0, 1, 2, 3, 4].map((i) => {
+                  listener({ type: 'tool_execution_start', toolName: 'get_report', args: { reportId: String(i) } });
+                  return tools.get_report.execute(`c${step}-${i}`, { reportId: String(i) }, new AbortController().signal);
+                }));
+                batchOutcomes.push(batch.map((r: any) => (r.details?.error ? 'refused' : 'served')));
+              }
+              messages.push({ role: 'assistant', stopReason: 'aborted', content: [] });
+              listener({ type: 'message_end', message: messages[messages.length - 1] });
+            }),
+          },
+        };
+      });
+      const r = await ask(streamAsk, { question: 'q', pageContext: { route: '/' } });
+      expect(batchOutcomes[0]).toEqual(['served', 'served', 'served', 'refused', 'refused']); // the batch overrun is contained
+      expect(hits).toBe(3); // exactly the budget reached the API
+      expect(batchOutcomes[1]).toEqual(['refused', 'refused', 'refused', 'refused', 'refused']); // nothing left → the turn is cut
+      expect(sessionAbort).toHaveBeenCalledTimes(1);
+      expect(r.error).toBe('The assistant stopped after 3 tool lookups (assistant.maxToolCalls).');
+      expect(askInFlight()).toBe(0);
+      const turn: any = appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').pop()![1];
+      expect(turn.error).toContain('3 tool lookups');
+    } finally {
+      server.close();
+      delete process.env.AH_JUDGE_SERVER_URL;
+      delete process.env.AH_ASK_SESSIONS_DIR;
+    }
+  });
+
+  it('compaction: pi rewriting session.messages mid-turn (shrunk array) must not turn a partial failure into a success', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    const { streamAsk, prepareAsk, resetAskServiceState } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    let listener: any;
+    const messages: any[] = Array.from({ length: 20 }, () => ({ role: 'assistant', content: [{ type: 'text', text: 'old' }], stopReason: 'stop' }));
+    createAgentSession.mockImplementationOnce(async () => ({ session: {
+      messages,
+      subscribe: (l: any) => { listener = l; return () => {}; },
+      prompt: async () => {
+        // what auto-compaction does: the array is replaced by a summary + the tail
+        messages.splice(0, messages.length, { role: 'compactionSummary', content: 'summary' });
+        listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Half an answer' } });
+        const terminal = { role: 'assistant', content: [{ type: 'text', text: 'Half an answer' }], stopReason: 'error', errorMessage: 'synthetic provider failure' };
+        messages.push(terminal);
+        listener({ type: 'message_end', message: terminal });
       },
-    }));
-    const r = await ask(streamAsk, { question: 'q', pageContext: { route: '/' } });
-    expect(sessionAbort).toHaveBeenCalled();
-    expect(r.error).toBe('The assistant stopped after 2 tool lookups (assistant.maxToolCalls).');
-    expect(askInFlight()).toBe(0);
-    const turn: any = appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').pop()![1];
-    expect(turn.error).toContain('2 tool lookups');
-    expect(turn.toolCalls.length).toBeGreaterThanOrEqual(3); // the mock emits its events synchronously; the abort lands after them
+    } }));
+    const p = await prepareAsk({ pageContext: { route: '/' } });
+    const r = await ask(streamAsk, { question: 'q', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(r.answer).toBeUndefined();
+    expect(r.error).toBe('synthetic provider failure');
+    expect(appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').pop()![1]).toMatchObject({ answer: 'Half an answer', error: 'synthetic provider failure' });
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 
@@ -669,7 +730,8 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     let fail = true;
     createAgentSession.mockImplementationOnce(async () => {
       const messages: any[] = [];
-      return { session: { messages, subscribe: jest.fn(() => () => {}), prompt: jest.fn(async (p: string) => { prompted.push(p); if (fail) throw new Error('ThrottlingException'); messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'ok' }] }); }) } };
+      let listener: any;
+      return { session: { messages, subscribe: jest.fn((l: any) => { listener = l; return () => {}; }), prompt: jest.fn(async (p: string) => { prompted.push(p); if (fail) throw new Error('ThrottlingException'); const m = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'ok' }] }; messages.push(m); listener({ type: 'message_end', message: m }); }) } };
     });
     const p = await prepareAsk({ pageContext: { route: '/runs/report-1' }, selections: [] });
     expect((await ask(streamAsk, { question: 'q1', pageContext: { route: '/runs/report-1' }, sessionId: p.sessionId })).error).toBe('ThrottlingException');
@@ -683,29 +745,59 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 
-  it('hard budget: a prompt that ignores the abort still gives back its slot and hold after the grace period; the thread is dropped from memory', async () => {
-    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
-    process.env.AH_ASK_ABORT_GRACE_MS = '100';
-    process.env.AH_ASK_TURN_TIMEOUT_MS = '50';
+  it('hard budget: a prompt that ignores the abort gives back its SLOT after the grace period, but the thread stays held until that prompt settles — no second writer on its file', async () => {
+    const fs = require('fs');
+    const dir = fs.mkdtempSync('/tmp/ask-grace-');
+    process.env.AH_ASK_SESSIONS_DIR = dir;
+    process.env.AH_ASK_ABORT_GRACE_MS = '60';
+    process.env.AH_ASK_TURN_TIMEOUT_MS = '40';
     mockConfig.mockReturnValue({ assistant: { maxConcurrent: 1 } });
     const { streamAsk, prepareAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
     resetAskServiceState();
-    createAgentSession.mockImplementationOnce(async () => ({
-      session: { messages: [], subscribe: jest.fn(() => () => {}), prompt: jest.fn(() => new Promise(() => { /* never settles */ })), abort: jest.fn(async () => { /* ignored */ }) },
-    }));
-    const p = await prepareAsk({ pageContext: { route: '/' } });
-    const t0 = Date.now();
-    const r = await ask(streamAsk, { question: 'stuck', pageContext: { route: '/' }, sessionId: p.sessionId });
-    expect(Date.now() - t0).toBeLessThan(2000);
-    expect(r.error).toBe('The assistant ran out of time after 0s (assistant.turnTimeoutMs).');
-    expect(askInFlight()).toBe(0);
-    // the stuck pi session is gone from memory: the same thread id re-opens from its file (here: not found → clear error, not "still answering")
-    const again = await ask(streamAsk, { question: 'again', pageContext: { route: '/' }, sessionId: p.sessionId });
-    expect(again.error).not.toMatch(/still answering/);
-    expect(createAgentSession).toHaveBeenCalledTimes(1); // nothing on disk for the fake id → no second session
-    delete process.env.AH_ASK_ABORT_GRACE_MS;
-    delete process.env.AH_ASK_TURN_TIMEOUT_MS;
-    delete process.env.AH_ASK_SESSIONS_DIR;
+    let oldStillAlive = false;
+    let releaseOld: (() => void) | null = null;
+    createAgentSession.mockImplementationOnce(async () => {
+      const messages: any[] = [];
+      let listener: any;
+      return { session: {
+        messages, subscribe: jest.fn((l: any) => { listener = l; return () => {}; }), abort: jest.fn(async () => { /* ignored: non-cooperative */ }),
+        prompt: jest.fn(async () => {
+          oldStillAlive = true;
+          await new Promise<void>((r) => { releaseOld = r; });
+          oldStillAlive = false;
+          const m = { role: 'assistant', stopReason: 'aborted', content: [] };
+          messages.push(m); listener({ type: 'message_end', message: m });
+        }),
+      } };
+    });
+    try {
+      const p = await prepareAsk({ pageContext: { route: '/' } });
+      fs.writeFileSync(`${dir}/2026_${p.sessionId}.jsonl`, ''); // the thread IS persisted: a reopen would be a second writer
+      const t0 = Date.now();
+      const first = await ask(streamAsk, { question: 'stuck', pageContext: { route: '/' }, sessionId: p.sessionId });
+      expect(Date.now() - t0).toBeLessThan(2000);
+      expect(first.error).toBe('The assistant ran out of time after 0s (assistant.turnTimeoutMs).');
+      expect(askInFlight()).toBe(0); // the slot is back …
+      expect(oldStillAlive).toBe(true); // … while the old prompt is still running
+      // a follow-up now is refused (the thread is quarantined), NOT answered by a second pi session on the same JSONL
+      const second = await ask(streamAsk, { question: 'second writer', pageContext: { route: '/' }, sessionId: p.sessionId });
+      expect(second.answer).toBeUndefined();
+      expect(second.error).toMatch(/still answering a previous question/);
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+      // the old prompt finally settles → the hold is released and the same (single) session answers again
+      (releaseOld as unknown as () => void)();
+      await new Promise((r) => setTimeout(r, 20));
+      createAgentSession.mockImplementation(async () => { throw new Error('must not open a second session'); });
+      const sessionAfter = await ask(streamAsk, { question: 'after', pageContext: { route: '/' }, sessionId: p.sessionId });
+      expect(sessionAfter.error).not.toMatch(/still answering/);
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+    } finally {
+      (releaseOld as unknown as (() => void) | null)?.();
+      fs.rmSync(dir, { recursive: true, force: true });
+      delete process.env.AH_ASK_ABORT_GRACE_MS;
+      delete process.env.AH_ASK_TURN_TIMEOUT_MS;
+      delete process.env.AH_ASK_SESSIONS_DIR;
+    }
   });
 
   it('turn budget: the wall-clock deadline (assistant.turnTimeoutMs) aborts a turn that never finishes', async () => {
@@ -715,11 +807,12 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     resetAskServiceState();
     const messages: any[] = [];
     let release: (() => void) | null = null;
+    let listener: any;
     createAgentSession.mockImplementationOnce(async () => ({
       session: {
         messages,
-        subscribe: jest.fn(() => () => {}),
-        prompt: jest.fn(async () => { await new Promise<void>((r) => { release = r; }); messages.push({ role: 'assistant', stopReason: 'aborted', content: [] }); }),
+        subscribe: jest.fn((l: any) => { listener = l; return () => {}; }),
+        prompt: jest.fn(async () => { await new Promise<void>((r) => { release = r; }); const m = { role: 'assistant', stopReason: 'aborted', content: [] }; messages.push(m); listener({ type: 'message_end', message: m }); }),
         abort: jest.fn(async () => { release?.(); }),
       },
     }));
