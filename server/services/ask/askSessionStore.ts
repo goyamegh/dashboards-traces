@@ -191,10 +191,14 @@ function recoverTurn(g: MessageGroup): AskTurn {
     Array.isArray(e.message?.content) ? e.message.content.filter((c: any) => c?.type === 'toolCall' && typeof c.name === 'string').map((c: any) => c.name as string) : []
   );
   const last = g.replies[g.replies.length - 1] ?? g.user;
+  // A turn only completed if its LAST reply is an assistant message that stopped
+  // on its own: a tool call still waiting for its result, or a tool result with
+  // no answer after it, is a crash mid-answer even when earlier text exists.
+  const completed = terminal && last === terminal && terminal.message?.stopReason !== 'toolUse';
   let error: string | undefined;
   if (terminal?.message?.stopReason === 'error') error = terminal.message.errorMessage || 'The model call failed.';
   else if (terminal?.message?.stopReason === 'aborted') error = 'The answer was interrupted.';
-  else if (!answer.trim()) error = 'The answer was never completed.';
+  else if (!completed || !answer.trim()) error = 'The answer was never completed.';
   return {
     id: g.user.id, question: questionFromPrompt(textOf(g.user.message)), answer, selections: [],
     startedAt: g.user.timestamp, completedAt: last.timestamp, toolCalls, error,

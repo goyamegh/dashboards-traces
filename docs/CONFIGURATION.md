@@ -482,6 +482,10 @@ Closing the popover / panel or clicking **Stop** aborts the turn on the server,
 including a lookup that is still waiting on the API; a turn that exhausts its
 budget ends with an error that says so, and a model call that fails mid-thread
 is reported as an error on that turn (never as a re-run of the previous answer).
+An abort is cooperative (pi waits for the provider / lookup to honour it); if a
+cancelled turn has not stopped after 15 s (`AH_ASK_ABORT_GRACE_MS`) its
+concurrency slot is reclaimed anyway and the thread is dropped from memory — the
+next question re-opens it from its file.
 
 `/api/ask*` sits behind the same (absent) authentication as the rest of the
 REST API. Beyond what the API already exposes it persists the questions and

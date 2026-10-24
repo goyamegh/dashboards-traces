@@ -225,11 +225,16 @@ describe('useAskThreads', () => {
     expect(mockStream.mock.calls[4][0].selections).toEqual([{ text: 'fourth' }]);
     await act(async () => { await result.current.ask(id, 'retry'); });
     expect(mockStream.mock.calls[5][0].selections).toEqual([{ text: 'fourth' }]);
-    // imported (persisted) threads: every stored highlight was already seen by the model
+    // imported (persisted) threads: a stored highlight was seen by the model only if the thread has an answer;
+    // a prepared-but-never-asked thread still owes its highlight to the first question
     let imported: any;
-    act(() => { imported = result.current.importSession({ id: 'ask-9', page: { route: '/x' }, selections: [{ text: 'old' }], turns: [] } as any); });
+    act(() => { imported = result.current.importSession({ id: 'ask-9', page: { route: '/x' }, selections: [{ text: 'old' }], turns: [{ id: 't', question: 'q', answer: 'a', toolCalls: [], startedAt: '2026-01-01T00:00:00Z' }] } as any); });
     await act(async () => { await result.current.ask(imported.id, 'more'); });
     expect(mockStream.mock.calls[6][0]).toMatchObject({ sessionId: 'ask-9', selections: [] });
+    let prepared: any;
+    act(() => { prepared = result.current.importSession({ id: 'ask-10', page: { route: '/x' }, selections: [{ text: 'never asked' }], turns: [] } as any); });
+    await act(async () => { await result.current.ask(prepared.id, 'first question'); });
+    expect(mockStream.mock.calls[7][0]).toMatchObject({ sessionId: 'ask-10', selections: [{ text: 'never asked' }] });
   });
 
   it('Stop during a pending prepare cancels the question: no ask is dispatched once the prepare settles', async () => {

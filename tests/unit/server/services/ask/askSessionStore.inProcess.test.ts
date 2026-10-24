@@ -233,11 +233,16 @@ describe('readSession', () => {
     expect(d.model).toBe('p/m2');
     expect(d.lastAnswerPreview).toBe('a3');
 
+    // a crash AFTER a tool prelude but BEFORE the final answer is not a success: the prelude is kept as context, the turn is marked incomplete
+    user('q3b'); toolRoundTrip('get_report', 9);
+    expect(readSession(sm)!.turns[3]).toMatchObject({ question: 'q3b', answer: 'Let me check.', toolCalls: ['get_report'], error: 'The answer was never completed.' });
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a3b' }], provider: 'p', model: 'm2', stopReason: 'stop' });
+    s.recordTurn(sm, { id: 't3b', question: 'q3b', answer: 'a3b', selections: [], startedAt: 's', toolCalls: ['get_report'] });
     // a crash BEFORE any assistant text (or with a provider error) is recovered as a failed turn, not a blank success
     user('q4');
     sm.appendMessage({ role: 'assistant', content: [], provider: 'p', model: 'm2', stopReason: 'error', errorMessage: 'Throttling error: slow down' });
     user('q5');
-    expect(readSession(sm)!.turns.slice(3)).toMatchObject([
+    expect(readSession(sm)!.turns.slice(4)).toMatchObject([
       { question: 'q4', answer: '', error: 'Throttling error: slow down', toolCalls: [] },
       { question: 'q5', answer: '', error: 'The answer was never completed.', toolCalls: [] },
     ]);

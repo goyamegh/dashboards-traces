@@ -26,7 +26,7 @@ import type { AssistantConfig } from '@/lib/config/index';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '@/server/adapters/index';
 import type { PiExtensionAPI, PiExtensionFactory, PiSdk, PiSession } from '@/server/services/piSdkTypes';
-import { findRequestedModel, pickNewestClaudeModel } from '@/server/services/piAgenticJudgeService';
+import { bedrockBaseId, findRequestedModel, pickNewestClaudeModel } from '@/server/services/piAgenticJudgeService';
 import {
   buildAskSnapshot,
   buildAskSystemPrompt,
@@ -55,6 +55,8 @@ export const ASK_DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 /** One whole answer: model calls + tool lookups. */
 export const ASK_DEFAULT_TURN_TIMEOUT_MS = 4 * 60_000;
 export const ASK_DEFAULT_MAX_TOOL_CALLS = 30;
+/** After an abort, how long a turn may keep its concurrency slot before it is reclaimed regardless (env AH_ASK_ABORT_GRACE_MS). */
+export const ASK_ABORT_GRACE_MS = 15_000;
 
 export interface AskSettings {
   enabled: boolean;
@@ -325,11 +327,18 @@ const RUNTIME_TTL_MS = 5 * 60 * 1000;
  * An unavailable pin is an ERROR, never a silent fallback to another model.
  */
 export function resolvePinnedModel<T extends { provider: string; id: string }>(available: T[], pin: string): T {
+  // `provider/id` only when the prefix names a registry provider: Bedrock ARN
+  // ids (`arn:aws:bedrock:…:inference-profile/x`) contain a slash too.
   const slash = pin.indexOf('/');
-  const provider = slash > 0 ? pin.slice(0, slash) : undefined;
-  const id = slash > 0 ? pin.slice(slash + 1) : pin;
+  const prefix = slash > 0 ? pin.slice(0, slash) : undefined;
+  const provider = prefix && available.some((m) => m.provider === prefix) ? prefix : undefined;
+  const id = provider ? pin.slice(slash + 1) : pin;
   const pool = provider ? available.filter((m) => m.provider === provider) : available;
-  const model = findRequestedModel(pool, id);
+  // A pin that already names an inference-profile variant (`global.…`, `eu.…`)
+  // is taken verbatim; a bare Bedrock id keeps the region-profile preference
+  // (bare Claude 4.x ids cannot run on-demand) — findRequestedModel.
+  const exact = pool.find((m) => m.id === id);
+  const model = exact && (exact.provider !== 'amazon-bedrock' || bedrockBaseId(id) !== id) ? exact : findRequestedModel(pool, id);
   if (!model) {
     const have = available.map((m) => `${m.provider}/${m.id}`);
     throw new Error(
@@ -519,9 +528,11 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
 
   const releaseSlot = () => { if (counted) { answering -= 1; counted = false; } };
   const releaseHold = () => { if (ls && ls.heldBy === token) { ls.heldBy = null; ls.lastUsed = Date.now(); } };
+  /** Resolves ASK_ABORT_GRACE_MS after the first abort: the hard bound on how long a cancelled turn may keep its slot. */
+  const abortGrace = (() => { let fire!: () => void; const promise = new Promise<void>((r) => { fire = r; }); let timer: NodeJS.Timeout | undefined; return { promise, start() { if (!timer) { timer = setTimeout(fire, positiveInt(process.env.AH_ASK_ABORT_GRACE_MS) ?? ASK_ABORT_GRACE_MS); timer.unref?.(); } } }; })();
   const abortTurn = (reason?: string) => {
     if (reason && !cutShort) cutShort = reason;
-    if (ls && ls.heldBy === token) ls.session.abort?.().catch(() => { /* ignore */ });
+    if (ls && ls.heldBy === token) { ls.session.abort?.().catch(() => { /* ignore */ }); abortGrace.start(); }
   };
 
   (async () => {
@@ -589,24 +600,37 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
         } else if (event.type === 'tool_execution_start') {
           toolCalls.push(event.toolName);
           cb.onTool({ name: event.toolName, status: 'start', args: event.args });
-          if (toolCalls.length > settings.maxToolCalls) {
-            abortTurn(`The assistant stopped after ${settings.maxToolCalls} tool lookups (assistant.maxToolCalls).`);
-          }
         } else if (event.type === 'tool_execution_end') {
           cb.onTool({ name: event.toolName, status: 'end', isError: !!event.isError });
+          // The budget is exactly N lookups: cut the turn as the Nth settles, so an (N+1)th never starts.
+          if (toolCalls.length >= settings.maxToolCalls) {
+            abortTurn(`The assistant stopped after ${settings.maxToolCalls} tool lookups (assistant.maxToolCalls).`);
+          }
         }
       });
       // Turn budget: wall clock for model calls + tool lookups together.
       const budget = setTimeout(() => abortTurn(`The assistant ran out of time after ${Math.round(settings.turnTimeoutMs / 1000)}s (assistant.turnTimeoutMs).`), settings.turnTimeoutMs);
       const turnStartedAt = new Date().toISOString();
       const firstNewMessage = ls.session.messages?.length ?? 0;
+      let settledInTime = true;
       try {
-        await ls.session.prompt(userPrompt);
+        // An abort is cooperative: pi waits for the provider / tool to honour
+        // the signal. If something ignores it, the slot and the hold are still
+        // given back after a grace period and the pi session is dropped from
+        // memory (a later question re-opens the thread from its file).
+        settledInTime = await Promise.race([
+          ls.session.prompt(userPrompt).then(() => true),
+          abortGrace.promise.then(() => false),
+        ]);
       } finally {
         clearTimeout(budget);
         unsubscribe?.();
-        ls.turns += 1;
       }
+      if (!settledInTime) {
+        live.delete(ls.id);
+        throw new Error(cutShort ?? 'The answer did not stop after it was cancelled; the thread was reset.');
+      }
+      ls.turns += 1; // a thrown prompt leaves `turns` alone: the next question is still the first and rebuilds its snapshot
       const outcome = summarizeTurn((ls.session.messages ?? []).slice(firstNewMessage));
       const answer = outcome.answer || streamed;
       const durationMs = Date.now() - startedAt;

@@ -53,8 +53,8 @@ describe('withRefreshingBedrockCredentials', () => {
     expect(pf.created).toEqual(['ops']); // profile taken from the ambient env when pi's resolution has none
     // the file is rotated: the next call carries the new keys — same provider instance, no restart, no new runtime
     pf.rotate('B');
-    await wrapped.stream(bedrock, { messages: [] });
-    expect(rt.calls[1].name).toBe('stream');
+    await wrapped.streamSimple(bedrock, { messages: [] });
+    expect(rt.calls[1].name).toBe('streamSimple');
     expect(rt.calls[1].options.env).toEqual({ AWS_ACCESS_KEY_ID: 'AKIDB', AWS_SECRET_ACCESS_KEY: 'secret-B', AWS_SESSION_TOKEN: '', AWS_PROFILE: '' });
     expect(pf.created).toEqual(['ops']);
     // the pi-side auth resolution was consulted with the call's env/signal
@@ -97,6 +97,28 @@ describe('withRefreshingBedrockCredentials', () => {
     const wrapped = withRefreshingBedrockCredentials(rt as any, { providerFactory: () => (async () => { throw new Error('Could not load credentials from any providers'); }) as any, env: {} });
     await wrapped.streamSimple(bedrock, {}, { x: 6 });
     expect(rt.calls[0].options).toEqual({ x: 6 });
+  });
+
+  it('never replaces keys scoped explicitly on the call or on pi\'s stored credential (a chosen principal, not a rotating file)', async () => {
+    const pf = providerFactory();
+    const rt = new FakeRuntime();
+    rt.auth = { auth: {}, env: { AWS_ACCESS_KEY_ID: 'AKIDSTORED', AWS_SECRET_ACCESS_KEY: 'stored-secret' } };
+    const wrapped = withRefreshingBedrockCredentials(rt as any, { providerFactory: pf.factory, env: { AWS_PROFILE: 'ops' } });
+    await wrapped.streamSimple(bedrock, {}, { x: 1 });
+    expect(rt.calls[0].options).toEqual({ x: 1 });
+    const rt2 = new FakeRuntime();
+    const wrapped2 = withRefreshingBedrockCredentials(rt2 as any, { providerFactory: pf.factory, env: {} });
+    await wrapped2.streamSimple(bedrock, {}, { env: { AWS_ACCESS_KEY_ID: 'AKIDCALL', AWS_SECRET_ACCESS_KEY: 's' } });
+    expect(rt2.calls[0].options).toEqual({ env: { AWS_ACCESS_KEY_ID: 'AKIDCALL', AWS_SECRET_ACCESS_KEY: 's' } });
+    expect(pf.created).toEqual([]);
+  });
+
+  it('only streamSimple (the agent loop\'s entry point) is wrapped; stream() keeps its synchronous contract', () => {
+    const rt = new FakeRuntime();
+    const wrapped = withRefreshingBedrockCredentials(rt as any, { providerFactory: providerFactory().factory, env: {} });
+    const direct = wrapped.stream(bedrock, {}, { x: 1 });
+    expect(direct).toEqual({ kind: 'stream' }); // not a Promise
+    expect(rt.calls[0]).toMatchObject({ name: 'stream', options: { x: 1 } });
   });
 
   it('every other member passes through bound to the real runtime (private fields keep working)', async () => {

@@ -436,8 +436,14 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     resetAskServiceState();
     await expect(prepareAsk({ pageContext: { route: '/' } })).rejects.toThrow(/pinned model "does-not-exist"/);
     expect(() => resolvePinnedModel([], 'x')).toThrow(/no credentialed model at all/);
-    // Bedrock's region inference profile is still preferred within a pin's candidates
-    expect(resolvePinnedModel([{ provider: 'amazon-bedrock', id: 'anthropic.claude-sonnet-4-6' }, { provider: 'amazon-bedrock', id: 'us.anthropic.claude-sonnet-4-6' }], 'amazon-bedrock/anthropic.claude-sonnet-4-6').id).toBe('us.anthropic.claude-sonnet-4-6');
+    // Bedrock's region inference profile is still preferred within a pin's candidates — unless the pin names a variant verbatim
+    const variants = [{ provider: 'amazon-bedrock', id: 'anthropic.claude-sonnet-4-6' }, { provider: 'amazon-bedrock', id: 'us.anthropic.claude-sonnet-4-6' }, { provider: 'amazon-bedrock', id: 'global.anthropic.claude-sonnet-4-6' }];
+    expect(resolvePinnedModel(variants, 'amazon-bedrock/anthropic.claude-sonnet-4-6').id).toBe('us.anthropic.claude-sonnet-4-6');
+    expect(resolvePinnedModel(variants, 'amazon-bedrock/global.anthropic.claude-sonnet-4-6').id).toBe('global.anthropic.claude-sonnet-4-6');
+    expect(resolvePinnedModel(variants, 'global.anthropic.claude-sonnet-4-6').id).toBe('global.anthropic.claude-sonnet-4-6');
+    // a slash inside a bare id (Bedrock ARN) is not a provider separator
+    const arn = { provider: 'amazon-bedrock', id: 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/custom' };
+    expect(resolvePinnedModel([arn, ...variants], arn.id)).toBe(arn);
 
     // no pin: the newest Claude; a registry with no Claude still yields its newest model; an EMPTY registry is a clear error
     mockConfig.mockReturnValue({ assistant: {} });
@@ -653,6 +659,52 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     const turn: any = appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').pop()![1];
     expect(turn.error).toContain('2 tool lookups');
     expect(turn.toolCalls.length).toBeGreaterThanOrEqual(3); // the mock emits its events synchronously; the abort lands after them
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('a prompt that throws leaves the thread on its first turn: the next question rebuilds the snapshot instead of being treated as a follow-up', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    const { streamAsk, prepareAsk, resetAskServiceState } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    let fail = true;
+    createAgentSession.mockImplementationOnce(async () => {
+      const messages: any[] = [];
+      return { session: { messages, subscribe: jest.fn(() => () => {}), prompt: jest.fn(async (p: string) => { prompted.push(p); if (fail) throw new Error('ThrottlingException'); messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'ok' }] }); }) } };
+    });
+    const p = await prepareAsk({ pageContext: { route: '/runs/report-1' }, selections: [] });
+    expect((await ask(streamAsk, { question: 'q1', pageContext: { route: '/runs/report-1' }, sessionId: p.sessionId })).error).toBe('ThrottlingException');
+    fail = false;
+    expect(getById).toHaveBeenCalledTimes(1);
+    const r = await ask(streamAsk, { question: 'q2', pageContext: { route: '/runs/report-1' }, sessionId: p.sessionId });
+    expect(r.answer).toBe('ok');
+    expect(getById).toHaveBeenCalledTimes(2); // the snapshot was rebuilt for the retried first turn
+    expect(prompted[1]).toContain('## Data snapshot');
+    expect(prompted[1]).not.toContain('Follow-up');
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('hard budget: a prompt that ignores the abort still gives back its slot and hold after the grace period; the thread is dropped from memory', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    process.env.AH_ASK_ABORT_GRACE_MS = '100';
+    process.env.AH_ASK_TURN_TIMEOUT_MS = '50';
+    mockConfig.mockReturnValue({ assistant: { maxConcurrent: 1 } });
+    const { streamAsk, prepareAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    createAgentSession.mockImplementationOnce(async () => ({
+      session: { messages: [], subscribe: jest.fn(() => () => {}), prompt: jest.fn(() => new Promise(() => { /* never settles */ })), abort: jest.fn(async () => { /* ignored */ }) },
+    }));
+    const p = await prepareAsk({ pageContext: { route: '/' } });
+    const t0 = Date.now();
+    const r = await ask(streamAsk, { question: 'stuck', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.error).toBe('The assistant ran out of time after 0s (assistant.turnTimeoutMs).');
+    expect(askInFlight()).toBe(0);
+    // the stuck pi session is gone from memory: the same thread id re-opens from its file (here: not found → clear error, not "still answering")
+    const again = await ask(streamAsk, { question: 'again', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(again.error).not.toMatch(/still answering/);
+    expect(createAgentSession).toHaveBeenCalledTimes(1); // nothing on disk for the fake id → no second session
+    delete process.env.AH_ASK_ABORT_GRACE_MS;
+    delete process.env.AH_ASK_TURN_TIMEOUT_MS;
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 

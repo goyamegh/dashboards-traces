@@ -97,6 +97,9 @@ export function withRefreshingBedrockCredentials<T extends PiModelRuntimeLike>(r
     const merged = { ...(resolution?.env ?? {}), ...callEnv };
     const bearer = options?.apiKey || resolution?.auth?.apiKey || merged.AWS_BEARER_TOKEN_BEDROCK || env.AWS_BEARER_TOKEN_BEDROCK;
     if (bearer) return undefined;
+    // Keys scoped explicitly on the call or on pi's stored credential are a
+    // chosen principal, not a file that rotates: never replace them.
+    if (merged.AWS_ACCESS_KEY_ID && merged.AWS_SECRET_ACCESS_KEY) return undefined;
     const profile = options?.profile || merged.AWS_PROFILE || env.AWS_PROFILE || undefined;
     try {
       return await resolveBedrockEnv(providerFor(profile));
@@ -106,17 +109,19 @@ export function withRefreshingBedrockCredentials<T extends PiModelRuntimeLike>(r
     }
   };
 
-  const wrapStream = (name: 'stream' | 'streamSimple') => async (model: any, context: any, options?: any) => {
+  // The agent loop's `streamFn` is `async (…) => modelRuntime.streamSimple(…)`,
+  // so a Promise of the stream is transparent to it. Only that entry point is
+  // wrapped: `stream()` is documented as returning its stream synchronously and
+  // nothing on the agent path calls it.
+  const streamSimple = async (model: any, context: any, options?: any) => {
     const injected = await credentialEnv(model, options);
     const next = injected ? { ...(options ?? {}), env: { ...(options?.env ?? {}), ...injected } } : options;
-    return runtime[name](model, context, next);
+    return runtime.streamSimple(model, context, next);
   };
 
   // A Proxy keeps `this` bound to the real runtime for every untouched member
-  // (pi reads private fields through getters) while overriding the two entry
-  // points the agent loop calls (`streamFn` → `streamSimple`; `stream` for
-  // completeness).
-  const overrides: Record<string, unknown> = { stream: wrapStream('stream'), streamSimple: wrapStream('streamSimple') };
+  // (pi reads private fields through getters).
+  const overrides: Record<string, unknown> = { streamSimple };
   return new Proxy(runtime, {
     get(target, prop) {
       if (typeof prop === 'string' && prop in overrides) return overrides[prop];

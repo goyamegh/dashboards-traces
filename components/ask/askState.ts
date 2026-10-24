@@ -230,7 +230,9 @@ export function useAskThreads() {
       id: `s-${s.id}`,
       sessionId: s.id,
       route: s.page.route,
-      selections: s.selections.map((sel) => ({ ...sel, sent: true })),
+      // A thread with an answer has shown its stored highlights to the model; a
+      // prepared-but-never-asked one has not (prepare only persists them).
+      selections: s.selections.map((sel) => ({ ...sel, sent: s.turns.length > 0 })),
       model: s.model,
       createdAt: Date.now(),
       turns: s.turns.map((turn) => ({

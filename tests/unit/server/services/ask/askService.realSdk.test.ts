@@ -88,8 +88,8 @@ describe('askService on the real pi SDK + real AWS SDK (scripted local Bedrock, 
     if (skip()) return;
     expect(r.toolBudget.error).toBe('The assistant stopped after 3 tool lookups (assistant.maxToolCalls).');
     expect(r.toolBudget.answer).toBeUndefined();
-    expect(r.toolBudget.toolStarts).toBeLessThanOrEqual(4);
-    expect(r.toolBudget.modelCalls).toBeLessThanOrEqual(5);
+    expect(r.toolBudget.toolStarts).toBe(3); // exactly the budget: the 4th lookup never starts
+    expect(r.toolBudget.modelCalls).toBeLessThanOrEqual(4);
     expect(r.toolBudget.inFlight).toBe(0);
   });
 
