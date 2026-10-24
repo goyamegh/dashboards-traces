@@ -32,10 +32,10 @@ import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport, isE
 import { AgentFingerprintChip, AgentConfigChangedBadge } from './AgentFingerprintChip';
 import { resolveCanonicalEvaluationRun } from '@/lib/resolveCanonicalRun';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel, getErrorStage } from './ResultStatus';
+import { markPageReady } from '@/lib/pageLatency';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
 import { getRunActionVisibility } from '@/lib/runActions';
-import { markPageReady } from '@/lib/pageLatency';
 import { TestCaseInspectorPanel } from './TestCaseInspectorPanel';
 import { InlineRenameField } from './InlineRenameField';
 import { Breadcrumbs } from './Breadcrumbs';
