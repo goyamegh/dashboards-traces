@@ -36,7 +36,9 @@ class FakeSessionManager implements PiSessionManagerLike {
     FakeSessionManager.created.push(sm);
     return sm;
   }
+  static opens = 0;
   static open(path: string): FakeSessionManager {
+    FakeSessionManager.opens += 1;
     const header = JSON.parse(readFileSync(path, 'utf-8').split('\n')[0]);
     if (header.type !== 'session') throw new Error('not a pi session file');
     return new FakeSessionManager(path, header.id, header.cwd);
@@ -159,6 +161,34 @@ describe('PiAskSessionStore.list', () => {
     expect(s.list({ limit: 1 }).map((x) => x.firstQuestion)).toEqual(['compare q']);
     expect(s.get(foreign.getSessionId())).toBeNull();
   });
+
+  it('re-parses a session file only when it changed: a panel refresh over an unchanged history opens no files', () => {
+    const s = new PiAskSessionStore(SM, dir);
+    const a = answered(s, 'first', 'a1');
+    answered(s, 'second', 'a2');
+    const foreign = FakeSessionManager.create('/elsewhere', dir);
+    writeFileSync(join(dir, '00000000000000_broken.jsonl'), '{not json\n');
+    FakeSessionManager.opens = 0;
+    expect(s.list()).toHaveLength(2);
+    const firstPass = FakeSessionManager.opens;
+    expect(firstPass).toBeGreaterThanOrEqual(3); // every candidate file parsed once (incl. the foreign one; the corrupt one throws before/at open)
+    // the same history again (what the panel does on every refresh): nothing re-read
+    expect(s.list()).toHaveLength(2);
+    expect(s.list({ route: page.route })).toHaveLength(2);
+    expect(FakeSessionManager.opens).toBe(firstPass);
+    // one thread gets a new turn → only that file is parsed again, and the summary reflects it
+    (a as FakeSessionManager).appendMessage({ role: 'user', content: 'more?' });
+    (a as FakeSessionManager).appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'yes' }], stopReason: 'stop' });
+    s.recordTurn(a, { id: 't-x', question: 'more?', answer: 'yes', selections: [], startedAt: '2027-01-01T00:00:00.000Z', completedAt: '2027-01-01T00:00:01.000Z', toolCalls: [] });
+    const after = s.list();
+    expect(FakeSessionManager.opens).toBe(firstPass + 1);
+    expect(after[0]).toMatchObject({ id: a.getSessionId(), turnCount: 2, lastAnswerPreview: 'yes' });
+    // a deleted file drops out (and its cache entry with it)
+    rmSync((foreign as FakeSessionManager).file);
+    rmSync((a as FakeSessionManager).file);
+    expect(s.list().map((x) => x.firstQuestion)).toEqual(['second']);
+    expect(FakeSessionManager.opens).toBe(firstPass + 1);
+  });
 });
 
 describe('readSession', () => {
@@ -168,34 +198,49 @@ describe('readSession', () => {
     expect(readSession(foreign)).toBeNull();
   });
 
-  it('recovers turns from bare pi messages when a turn entry is missing (crash mid-answer), and prefers recorded turns otherwise', () => {
+  it('recovers ONLY the turn whose entry is missing (crash mid-answer), as one turn spanning its tool round-trips; recorded turns stay verbatim', () => {
     const s = new PiAskSessionStore(SM, dir);
-    const sm = s.create({ page, selections: [], firstQuestion: 'q1' }) as FakeSessionManager;
-    sm.appendMessage({ role: 'user', content: [{ type: 'text', text: '## Page\nx\n\n## Question\nq1' }] });
-    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a1' }], provider: 'p', model: 'm' });
-    // crash: no ASK_TURN_ENTRY written
-    let d = readSession(sm)!;
-    expect(d.turns).toHaveLength(1);
-    expect(d.turns[0]).toMatchObject({ question: 'q1', answer: 'a1', selections: [], toolCalls: [] });
-    expect(d.turns[0].startedAt).toBeTruthy();
-    expect(d.turns[0].completedAt).toBeTruthy();
-    expect(d.firstQuestion).toBe('q1');
-    expect(d.model).toBe('p/m');
+    const sm = s.create({ page, selections: [{ text: 'quoted' }], firstQuestion: 'q1' }) as FakeSessionManager;
+    const user = (q: string) => sm.appendMessage({ role: 'user', content: [{ type: 'text', text: `## Page\nx\n\n## Question\n${q}` }] });
+    const toolRoundTrip = (name: string, i: number) => {
+      // what pi appends for a model that calls a tool before answering: assistant(toolCall) → toolResult
+      sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Let me check.' }, { type: 'toolCall', id: `c${i}`, name, arguments: { id: 'x' } }], provider: 'p', model: 'm', stopReason: 'toolUse' });
+      sm.appendMessage({ role: 'toolResult', toolCallId: `c${i}`, toolName: name, content: [{ type: 'text', text: '{"id":"x"}' }] });
+    };
 
-    // the next turn is recorded properly: 2 assistant messages vs 1 recorded turn →
-    // recovery runs again and yields 2 turns (more than recorded) → recovered wins
-    sm.appendMessage({ role: 'user', content: 'q2' });
-    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a2' }], model: 'm2' });
-    s.recordTurn(sm, { id: 't2', question: 'q2', answer: 'a2', selections: [], startedAt: 's', toolCalls: ['get_report'] });
-    d = readSession(sm)!;
-    expect(d.turns.map((t) => t.question)).toEqual(['q1', 'q2']);
-    expect(d.model).toBe('m2'); // no provider → bare model id
+    // turn 1: tool call, then the answer; recorded normally
+    user('q1'); toolRoundTrip('get_report', 1);
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a1 final' }], provider: 'p', model: 'm', stopReason: 'stop' });
+    s.recordTurn(sm, { id: 't1', question: 'q1', answer: 'a1 final', selections: [{ text: 'quoted' }], startedAt: 's1', completedAt: 'c1', durationMs: 1200, firstTokenMs: 300, toolCalls: ['get_report'] });
+    // turn 2: TWO tool calls, then the answer — the server died before writing the turn entry
+    user('q2'); toolRoundTrip('get_test_case', 2); toolRoundTrip('query_spans', 3);
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a2 final' }], provider: 'p', model: 'm2', stopReason: 'stop' });
+    // turn 3: recorded normally after the restart
+    user('q3');
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'a3' }], provider: 'p', model: 'm2', stopReason: 'stop' });
+    s.recordTurn(sm, { id: 't3', question: 'q3', answer: 'a3', selections: [], startedAt: 's3', completedAt: 'c3', durationMs: 800, toolCalls: [] });
 
-    // once every assistant message has a recorded turn, the recorded turns are used verbatim
-    s.recordTurn(sm, { id: 't1', question: 'q1 (recorded)', answer: 'a1', selections: [], startedAt: 's', toolCalls: [] });
-    d = readSession(sm)!;
-    expect(d.turns.map((t) => t.question)).toEqual(['q2', 'q1 (recorded)']);
-    expect(d.turns.every((t) => t.toolCalls !== undefined)).toBe(true);
+    const d = readSession(sm)!;
+    expect(d.turns.map((t) => t.question)).toEqual(['q1', 'q2', 'q3']);
+    // recorded turns are untouched: selections, timings, tool lists
+    expect(d.turns[0]).toEqual({ id: 't1', question: 'q1', answer: 'a1 final', selections: [{ text: 'quoted' }], startedAt: 's1', completedAt: 'c1', durationMs: 1200, firstTokenMs: 300, toolCalls: ['get_report'] });
+    expect(d.turns[2]).toEqual({ id: 't3', question: 'q3', answer: 'a3', selections: [], startedAt: 's3', completedAt: 'c3', durationMs: 800, toolCalls: [] });
+    // the recovered turn is ONE turn: the FINAL answer (not the "Let me check." prelude), both tool calls, no error
+    expect(d.turns[1]).toMatchObject({ question: 'q2', answer: 'a2 final', selections: [], toolCalls: ['get_test_case', 'query_spans'], error: undefined });
+    expect(d.turns[1].startedAt).toBeTruthy();
+    expect(d.turns[1].completedAt).toBeTruthy();
+    expect(d.turnCount).toBe(3);
+    expect(d.model).toBe('p/m2');
+    expect(d.lastAnswerPreview).toBe('a3');
+
+    // a crash BEFORE any assistant text (or with a provider error) is recovered as a failed turn, not a blank success
+    user('q4');
+    sm.appendMessage({ role: 'assistant', content: [], provider: 'p', model: 'm2', stopReason: 'error', errorMessage: 'Throttling error: slow down' });
+    user('q5');
+    expect(readSession(sm)!.turns.slice(3)).toMatchObject([
+      { question: 'q4', answer: '', error: 'Throttling error: slow down', toolCalls: [] },
+      { question: 'q5', answer: '', error: 'The answer was never completed.', toolCalls: [] },
+    ]);
   });
 
   it('an errored turn shows its error as the preview; an empty session falls back to the pi session name', () => {
@@ -208,12 +253,12 @@ describe('readSession', () => {
     s.recordTurn(sm, { id: 't', question: 'boom?', answer: '', selections: [], startedAt: 's', toolCalls: [], error: 'LLM unavailable' });
     d = readSession(sm)!;
     expect(d.lastAnswerPreview).toBe('LLM unavailable');
-    // an assistant message with no text parts contributes an empty answer
+    // an unrecorded prompt whose assistant messages carry no text parts is recovered as an incomplete turn AFTER the recorded one
     (sm as FakeSessionManager).appendMessage({ role: 'user', content: [{ type: 'text', text: 'x' }] });
     (sm as FakeSessionManager).appendMessage({ role: 'assistant', content: [{ type: 'tool_use', id: 'only' }] });
     (sm as FakeSessionManager).appendMessage({ role: 'assistant', content: 42 });
     d = readSession(sm)!;
-    expect(d.turns.map((t) => t.answer)).toEqual(['']);
+    expect(d.turns.map((t) => [t.question, t.answer, t.error])).toEqual([['boom?', '', 'LLM unavailable'], ['x', '', 'The answer was never completed.']]);
   });
 
   it('questionFromPrompt strips the context we prepend and keeps a bare question', () => {

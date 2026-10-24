@@ -21,7 +21,7 @@
  * The user/assistant messages themselves are the ordinary pi message entries.
  */
 
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import type { AskPageContext, AskSelection } from './askContext';
@@ -81,6 +81,13 @@ export interface PiSessionManagerStatic {
 }
 
 export class PiAskSessionStore {
+  /**
+   * Per-file summaries keyed by (mtime, size): a panel refresh lists every
+   * thread, and parsing every JSONL on every GET is unbounded synchronous work
+   * on the event loop as history grows. Unchanged files are not re-read.
+   */
+  private readonly summaries = new Map<string, { mtimeMs: number; size: number; summary: AskSessionSummary | null }>();
+
   constructor(
     private readonly SessionManager: PiSessionManagerStatic,
     readonly dir: string,
@@ -126,20 +133,38 @@ export class PiAskSessionStore {
 
   list(opts: { route?: string; limit?: number } = {}): AskSessionSummary[] {
     if (!existsSync(this.dir)) return [];
-    const files = readdirSync(this.dir).filter((f) => f.endsWith('.jsonl')).sort().reverse();
+    const files = readdirSync(this.dir).filter((f) => f.endsWith('.jsonl'));
+    const present = new Set(files);
+    for (const k of this.summaries.keys()) if (!present.has(k)) this.summaries.delete(k);
     const out: AskSessionSummary[] = [];
     for (const f of files) {
-      try {
-        const detail = readSession(this.SessionManager.open(join(this.dir, f), this.dir));
-        if (!detail) continue;
-        if (opts.route && detail.page.route !== opts.route) continue;
-        const { selections: _s, turns: _t, ...summary } = detail;
-        out.push(summary);
-      } catch {
-        // A foreign / corrupt file in the dir is skipped, never fatal.
-      }
+      const summary = this.summaryOf(f);
+      if (!summary) continue;
+      if (opts.route && summary.page.route !== opts.route) continue;
+      out.push(summary);
     }
     return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, opts.limit ?? 200);
+  }
+
+  /** Summary of one file, parsed only when the file changed since the last call. */
+  private summaryOf(file: string): AskSessionSummary | null {
+    const path = join(this.dir, file);
+    let st: { mtimeMs: number; size: number };
+    try { st = statSync(path); } catch { return null; }
+    const cached = this.summaries.get(file);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.summary;
+    let summary: AskSessionSummary | null = null;
+    try {
+      const detail = readSession(this.SessionManager.open(path, this.dir));
+      if (detail) {
+        const { selections: _s, turns: _t, ...rest } = detail;
+        summary = rest;
+      }
+    } catch {
+      // A foreign / corrupt file in the dir is skipped, never fatal.
+    }
+    this.summaries.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
+    return summary;
   }
 }
 
@@ -150,29 +175,64 @@ function textOf(message: any): string {
   return '';
 }
 
-/** Rebuild the Agent Health view of a pi session from its entries. Returns null for files that aren't ask sessions. */
+/**
+ * One prompt and everything pi appended for it: the user message, then the
+ * assistant / tool-result messages up to (not including) the next user message.
+ */
+interface MessageGroup { user: any; replies: any[] }
+
+/** An AskTurn rebuilt from bare pi messages (the custom turn entry never got written: crash mid-answer). */
+function recoverTurn(g: MessageGroup): AskTurn {
+  const assistants = g.replies.filter((e) => e.message?.role === 'assistant');
+  const terminal = assistants[assistants.length - 1];
+  let answer = '';
+  for (const e of assistants) { const t = textOf(e.message); if (t.trim()) answer = t; }
+  const toolCalls = assistants.flatMap((e) =>
+    Array.isArray(e.message?.content) ? e.message.content.filter((c: any) => c?.type === 'toolCall' && typeof c.name === 'string').map((c: any) => c.name as string) : []
+  );
+  const last = g.replies[g.replies.length - 1] ?? g.user;
+  let error: string | undefined;
+  if (terminal?.message?.stopReason === 'error') error = terminal.message.errorMessage || 'The model call failed.';
+  else if (terminal?.message?.stopReason === 'aborted') error = 'The answer was interrupted.';
+  else if (!answer.trim()) error = 'The answer was never completed.';
+  return {
+    id: g.user.id, question: questionFromPrompt(textOf(g.user.message)), answer, selections: [],
+    startedAt: g.user.timestamp, completedAt: last.timestamp, toolCalls, error,
+  };
+}
+
+/**
+ * Rebuild the Agent Health view of a pi session from its entries. Returns null
+ * for files that aren't ask sessions.
+ *
+ * Turns come from our `agent-health.ask.turn` entries, each written right after
+ * its prompt's messages. A prompt whose entry is MISSING (the server died
+ * mid-answer) is recovered from the bare pi messages in its place — only that
+ * one; recorded turns keep their answers, selections, timings and tool lists.
+ */
 export function readSession(sm: PiSessionManagerLike): AskSessionDetail | null {
   const entries = sm.getEntries();
   const metaEntry = entries.find((e) => e.type === 'custom' && e.customType === ASK_META_ENTRY);
   if (!metaEntry) return null;
   const meta = metaEntry.data as AskSessionMeta;
-  const turns: AskTurn[] = entries.filter((e) => e.type === 'custom' && e.customType === ASK_TURN_ENTRY).map((e) => e.data as AskTurn);
-  // Fallback for a turn whose custom entry never got written (crash mid-answer):
-  // pair user/assistant messages that aren't covered by a recorded turn.
   const messages = entries.filter((e) => e.type === 'message');
-  const assistantCount = messages.filter((e) => e.message?.role === 'assistant').length;
-  if (assistantCount > turns.length) {
-    let pendingQ: { text: string; ts: string } | null = null;
-    const recovered: AskTurn[] = [];
-    for (const e of messages) {
-      if (e.message?.role === 'user') pendingQ = { text: questionFromPrompt(textOf(e.message)), ts: e.timestamp };
-      else if (e.message?.role === 'assistant' && pendingQ) {
-        recovered.push({ id: e.id, question: pendingQ.text, answer: textOf(e.message), selections: [], startedAt: pendingQ.ts, completedAt: e.timestamp, toolCalls: [] });
-        pendingQ = null;
+  const turns: AskTurn[] = [];
+  let open: MessageGroup | null = null;
+  for (const e of entries) {
+    if (e.type === 'message') {
+      const role = e.message?.role;
+      if (role === 'user') {
+        if (open) turns.push(recoverTurn(open));
+        open = { user: e, replies: [] };
+      } else if (open && (role === 'assistant' || role === 'toolResult')) {
+        open.replies.push(e);
       }
+    } else if (e.type === 'custom' && e.customType === ASK_TURN_ENTRY) {
+      turns.push(e.data as AskTurn); // covers the prompt whose messages precede it
+      open = null;
     }
-    if (recovered.length > turns.length) turns.splice(0, turns.length, ...recovered);
   }
+  if (open) turns.push(recoverTurn(open));
   let model: string | undefined;
   for (const e of messages) if (e.message?.role === 'assistant' && e.message?.model) model = `${e.message.provider ? e.message.provider + '/' : ''}${e.message.model}`;
   const selections: AskSelection[] = [...(meta.selections ?? [])];
