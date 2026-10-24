@@ -33,6 +33,10 @@ const FULL_FETCH_HOLD_MS = 20_000;
 const RENDER_DEADLINE_MS = 10_000;
 
 const TEST_CASES_LIST_RE = /\/api\/storage\/test-cases(\?[^#]*)?$/;
+const BENCHMARKS_LIST_RE = /\/api\/storage\/benchmarks(\?[^#]*)?$/;
+/** Bundled demo data the "Show sample data" toggle reveals (cli/demo/sample*.ts). */
+const SAMPLE_TEST_CASE_NAME = 'Weekend Getaway to Napa Valley';
+const SAMPLE_BENCHMARK_NAME = 'Travel Planning Accuracy - Demo';
 
 function isFullTestCaseListUrl(url: string): boolean {
   if (!TEST_CASES_LIST_RE.test(url)) return false;
@@ -204,5 +208,80 @@ test.describe('Evaluations pages never fetch the full test-case corpus (#591)', 
     for (const url of recorded.all) {
       expect(url).toContain('fields=summary');
     }
+  });
+
+  test('Test Cases page keeps the summary projection when sample data is toggled on and off', async ({ page }) => {
+    const recorded = await recordTestCaseListRequests(page);
+
+    await page.goto('/evaluations/test-cases');
+    await page.waitForSelector('[data-testid="test-cases-page"]', { timeout: 30_000 });
+    await expect(page.getByText(smallCaseNames[0], { exact: true }).first()).toBeVisible({ timeout: RENDER_DEADLINE_MS });
+    // Real data exists, so the server leaves the bundled demo cases out by default.
+    await expect(page.getByText(SAMPLE_TEST_CASE_NAME, { exact: true })).toHaveCount(0);
+    const initialFetches = recorded.all.length;
+    expect(initialFetches).toBeGreaterThan(0);
+
+    // Toggle ON: the refetch must ask for the demo cases explicitly AND stay a
+    // summary fetch — this branch of the request used to be the easiest place
+    // to reintroduce a full download.
+    await page.getByRole('button', { name: 'Show sample data' }).click();
+    await expect(page.getByText(SAMPLE_TEST_CASE_NAME, { exact: true }).first()).toBeVisible({ timeout: RENDER_DEADLINE_MS });
+    await expect.poll(() => recorded.all.length, { timeout: RENDER_DEADLINE_MS }).toBeGreaterThan(initialFetches);
+    const withSample = recorded.all.slice(initialFetches);
+    expect(withSample.length).toBeGreaterThan(0);
+    for (const url of withSample) {
+      const params = new URL(url).searchParams;
+      expect(params.get('fields')).toBe('summary');
+      expect(params.get('includeSample')).toBe('true');
+    }
+    // The seeded (real) rows are still listed alongside the demo ones.
+    await expect(page.getByText(smallCaseNames[0], { exact: true }).first()).toBeVisible();
+
+    // Toggle OFF: back to the server default (no includeSample), still summary.
+    const beforeHide = recorded.all.length;
+    await page.getByRole('button', { name: 'Hide sample data' }).click();
+    await expect(page.getByText(SAMPLE_TEST_CASE_NAME, { exact: true })).toHaveCount(0, { timeout: RENDER_DEADLINE_MS });
+    await expect.poll(() => recorded.all.length, { timeout: RENDER_DEADLINE_MS }).toBeGreaterThan(beforeHide);
+    for (const url of recorded.all.slice(beforeHide)) {
+      const params = new URL(url).searchParams;
+      expect(params.get('fields')).toBe('summary');
+      expect(params.get('includeSample')).toBeNull();
+    }
+
+    expect(recorded.full, `full test-case fetches issued while toggling sample data:\n${recorded.full.join('\n')}`).toEqual([]);
+  });
+
+  test('Benchmarks page toggles sample data by refetching benchmarks only (no test-case download)', async ({ page }) => {
+    const recorded = await recordTestCaseListRequests(page);
+    const benchmarkFetches: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'GET' && BENCHMARKS_LIST_RE.test(req.url())) benchmarkFetches.push(req.url());
+    });
+
+    await page.goto('/evaluations/benchmarks');
+    await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30_000 });
+    await expect(page.getByText(benchmarkName, { exact: true })).toBeVisible({ timeout: RENDER_DEADLINE_MS });
+    await expect(page.getByText(SAMPLE_BENCHMARK_NAME, { exact: true })).toHaveCount(0);
+    const initialBenchmarkFetches = benchmarkFetches.length;
+    expect(initialBenchmarkFetches).toBeGreaterThan(0);
+    for (const url of benchmarkFetches) {
+      expect(new URL(url).searchParams.get('includeSample')).toBeNull();
+    }
+
+    await page.getByRole('button', { name: 'Show sample data' }).click();
+    await expect(page.getByText(SAMPLE_BENCHMARK_NAME, { exact: true })).toBeVisible({ timeout: RENDER_DEADLINE_MS });
+    await expect.poll(() => benchmarkFetches.length, { timeout: RENDER_DEADLINE_MS }).toBeGreaterThan(initialBenchmarkFetches);
+    for (const url of benchmarkFetches.slice(initialBenchmarkFetches)) {
+      expect(new URL(url).searchParams.get('includeSample')).toBe('true');
+    }
+    // The seeded (real) benchmark is still listed alongside the demo one.
+    await expect(page.getByText(benchmarkName, { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide sample data' }).click();
+    await expect(page.getByText(SAMPLE_BENCHMARK_NAME, { exact: true })).toHaveCount(0, { timeout: RENDER_DEADLINE_MS });
+
+    // Throughout: the Benchmarks list never needs test cases, in any mode.
+    await page.waitForTimeout(500);
+    expect(recorded.all, `test-case list fetches issued by /evaluations/benchmarks while toggling sample data:\n${recorded.all.join('\n')}`).toEqual([]);
   });
 });
