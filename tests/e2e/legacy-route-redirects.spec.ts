@@ -178,6 +178,70 @@ test.describe('Retired legacy routes redirect to their evals3 twin', () => {
     await expect(page.locator('[data-testid="sidebar"]')).toBeVisible({ timeout: 30000 });
   });
 
+  // The redirects are REPLACEs: a legacy deep link must not leave a history
+  // entry behind, or Back would bounce the user between the legacy URL and the
+  // evals3 page forever. Proven through the browser's own history: coming from
+  // a known page, the redirect adds exactly ONE entry and Back returns to the
+  // page the user came from — never to the legacy URL.
+  const legacyLinksWithoutFixtures: Array<[from: string, to: RegExp]> = [
+    ['/benchmarks', /\/evaluations\/benchmarks$/],
+    ['/test-cases', /\/evaluations\/test-cases$/],
+    ['/evals', /\/evaluations\/test-cases$/],
+    ['/run', /\/evaluations\/test-cases$/],
+    ['/reports', /\/evaluations\/benchmarks$/],
+    ['/experiments', /\/evaluations\/benchmarks$/],
+    ['/benchmarks/some-id/not-a-page', /\/evaluations\/benchmarks$/],
+    ['/test-cases/some-id/not-a-page', /\/evaluations\/test-cases$/],
+  ];
+  for (const [from, to] of legacyLinksWithoutFixtures) {
+    test(`${from} redirects with a REPLACE (no history entry, Back skips the legacy URL)`, async ({ page }) => {
+      await page.goto('/settings');
+      await expect(page.locator('[data-testid="sidebar"]')).toBeVisible({ timeout: 30000 });
+      const before = await page.evaluate(() => window.history.length);
+
+      await page.goto(from);
+      await page.waitForURL(to, { timeout: 15000 });
+      await expect(page.locator('[data-testid="sidebar"]')).toBeVisible({ timeout: 30000 });
+      expect(await page.evaluate(() => window.history.length)).toBe(before + 1);
+
+      await page.goBack();
+      await page.waitForURL(/\/settings$/, { timeout: 15000 });
+      expect(new URL(page.url()).pathname).toBe('/settings');
+    });
+  }
+
+  // Same REPLACE property for the fixture-backed redirects (fresh page each).
+  async function expectReplaceRedirect(page: import('@playwright/test').Page, from: string, to: string) {
+    await page.goto('/settings');
+    await expect(page.locator('[data-testid="sidebar"]')).toBeVisible({ timeout: 30000 });
+    const before = await page.evaluate(() => window.history.length);
+
+    await page.goto(from);
+    await page.waitForURL(to, { timeout: 15000 });
+    expect(await page.evaluate(() => window.history.length)).toBe(before + 1);
+
+    await page.goBack();
+    await page.waitForURL(/\/settings$/, { timeout: 15000 });
+    expect(new URL(page.url()).pathname).toBe('/settings');
+  }
+
+  test('/benchmarks/:id/runs/:runId redirects with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/benchmarks/${benchmarkId}/runs/${RUN_ID}`,
+      `**/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID}/inspect`);
+  });
+
+  test('/runs/:reportId (resolved through storage) redirects with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/runs/${RUN_REPORT_ID}`,
+      `**/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID}/inspect?reportId=${RUN_REPORT_ID}`);
+  });
+
+  test('/test-cases/:id/runs redirects with a REPLACE', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await expectReplaceRedirect(page, `/test-cases/${testCaseId}/runs`, `**/evaluations/test-cases/${testCaseId}`);
+  });
+
   test('re-running from the inspector lands on the NEW run\'s inspector (not the retired detail page)', async ({ page }) => {
     test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
     const NEW_RUN_ID = `eval-run-legacy-redirect-child-${stamp}`;
