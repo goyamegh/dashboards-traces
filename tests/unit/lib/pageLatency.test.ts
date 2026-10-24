@@ -401,7 +401,7 @@ describe('lib/pageLatency', () => {
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
     });
 
-    it('an in-page navigation on an instrumented route (benchmark Cases → Runs tab keeps the route key) DOES auto-settle, so the pill never sticks on "…"', async () => {
+    it('an in-page navigation on an instrumented route (benchmark Cases → Runs tab keeps the route key) is estimated at first paint, so the pill never sticks on "…" -- even while the page keeps polling', async () => {
       window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1'); // Cases tab
       jest.advanceTimersByTime(50);
@@ -415,11 +415,15 @@ describe('lib/pageLatency', () => {
       const rec = pageLatency.getCurrentRecord()!;
       expect(rec.route).toBe('benchmark-runs');
       expect(rec.readyMs).toBeNull();
-      jest.advanceTimersByTime(50); // first paint (the settle timer is armed from here: no requests)
+      // A busy benchmark never goes quiet (telemetry batches for 54 rows, a
+      // 2-5 s poll): the network-quiet rule would leave the pill on "…".
+      const busy = setInterval(() => { void fetch('/api/metrics/batch'); }, 300);
+      jest.advanceTimersByTime(50); // first paint
       expect(rec.renderMs).not.toBeNull();
-      expect(rec.settledMs).toBeNull();
-      jest.advanceTimersByTime(1100);
-      expect(rec.settledMs).toBe(rec.renderMs); // estimate: paint + 1 s quiet, no requests
+      expect(rec.settledMs).toBe(rec.renderMs); // estimate = first paint, stamped right there
+      jest.advanceTimersByTime(5000);
+      expect(rec.settledMs).toBe(rec.renderMs); // and it stays put under the polling
+      clearInterval(busy);
 
       // …but a fresh navigation to a DIFFERENT page with that key is still the page's to report.
       pageLatency.startNavigation('/evaluations/runs');
@@ -439,10 +443,11 @@ describe('lib/pageLatency', () => {
 
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs/run-2/inspect');
       const rec = pageLatency.getCurrentRecord()!;
-      jest.advanceTimersByTime(50);
-      await fetch('/api/storage/runs/report-2');
-      jest.advanceTimersByTime(1000); // estimate lands first
-      expect(rec.settledMs).not.toBeNull();
+      const load = fetch('/api/storage/runs/report-2'); // the reload's own request, started before paint
+      jest.advanceTimersByTime(50); // first paint → estimate lands first
+      expect(rec.settledMs).toBe(rec.renderMs);
+      await load;
+      expect(rec.apiCount).toBe(1);
       jest.advanceTimersByTime(400);
       ready('run-inspector'); // the page's own report
       expect(rec.readyMs).toBeGreaterThan(rec.settledMs!);

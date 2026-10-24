@@ -38,9 +38,13 @@
  *      -- EXCEPT for an in-page navigation that keeps the same route key
  *      (the benchmark page's Cases → Runs tab, a query-string change): the
  *      page component stays mounted, doesn't reload, and so never reports
- *      ready again, which left the pill on `…` for good. Those records get
- *      the estimate too; an explicit `markPageReady` still wins if the page
- *      does reload (e.g. the inspector switching to another run).
+ *      ready again, which left the pill on `…` for good. Those records are
+ *      estimated at FIRST PAINT (`~`): the page was already loaded, what the
+ *      user waited for is the switch itself. (Not the network-quiet rule: a
+ *      busy benchmark keeps polling / streaming telemetry for its rows, so a
+ *      1 s gap may never come and the pill would sit on `…` -- seen on a
+ *      54-run benchmark with runs in progress.) An explicit `markPageReady`
+ *      still wins if the page does reload (the inspector switching run).
  *   3. While a navigation is active, `window.fetch` calls whose pathname is
  *      under `/api/` (except `/api/debug`, the app-level sync App.tsx fires
  *      on every route change -- not the page's own work) that
@@ -197,6 +201,8 @@ interface Bookkeeping {
   lastResponseEndPerf: number | null;
   /** Route is one of the instrumented pages that will call markPageReady itself. */
   reportsReady: boolean;
+  /** Same route key as the record it replaced (tab switch / query change on a mounted page). */
+  inPage: boolean;
   /** markPageReady was called; the stamp lands after the next paint. */
   readyPending: boolean;
 }
@@ -498,7 +504,7 @@ export function startNavigation(pathname: string): void {
   const route = routeKeyFromPath(pathname);
   // Same route key as the record being replaced = in-page navigation (tab
   // switch, query change): the page stays mounted and won't report ready
-  // again, so this record must be allowed to auto-settle.
+  // again, so this record is estimated at first paint instead (see header).
   const inPageNavigation = current !== null && current.route === route;
   currentStartPerf = performance.now();
   current = {
@@ -517,7 +523,8 @@ export function startNavigation(pathname: string): void {
     inFlight: 0,
     firstRequestStartPerf: null,
     lastResponseEndPerf: null,
-    reportsReady: isInstrumentedRoute(route) && !inPageNavigation,
+    reportsReady: isInstrumentedRoute(route),
+    inPage: inPageNavigation,
     readyPending: false,
   };
   bookkeeping.set(record, bk);
@@ -528,8 +535,14 @@ export function startNavigation(pathname: string): void {
       requestAnimationFrame(() => {
         if (current === record && record.renderMs === null) {
           record.renderMs = Math.round(performance.now() - currentStartPerf);
-          // A page that never fetches anything is "ready" at first paint.
-          if (bk.inFlight === 0 && record.apiCount === 0) scheduleSettle(record);
+          if (bk.inPage && bk.reportsReady && record.readyMs === null && !bk.readyPending) {
+            // Instrumented page, in-page navigation: already loaded, the
+            // switch is what the user waited for -- estimate = first paint.
+            record.settledMs = record.renderMs;
+          } else if (bk.inFlight === 0 && record.apiCount === 0) {
+            // A page that never fetches anything is "ready" at first paint.
+            scheduleSettle(record);
+          }
           notify();
         }
       });
