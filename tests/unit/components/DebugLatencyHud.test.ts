@@ -19,6 +19,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 const mockIsActive = jest.fn();
 const mockGetCurrentRecord = jest.fn();
 const mockStartNavigation = jest.fn();
+const mockStopInstrumentation = jest.fn();
 const mockSubscribe = jest.fn();
 const mockGetOperationStats = jest.fn();
 const mockExposeConsoleApi = jest.fn();
@@ -32,6 +33,7 @@ jest.mock('@/lib/pageLatency', () => {
     isPageLatencyActive: () => mockIsActive(),
     getCurrentRecord: () => mockGetCurrentRecord(),
     startNavigation: (p: string) => mockStartNavigation(p),
+    stopInstrumentation: () => mockStopInstrumentation(),
     getOperationStats: () => mockGetOperationStats(),
     subscribe: (fn: () => void) => mockSubscribe(fn),
     // pure helpers: use the real ones so the rendered text is the real text
@@ -80,6 +82,7 @@ describe('DebugLatencyHud', () => {
     mockIsActive.mockReset().mockReturnValue(false);
     mockGetCurrentRecord.mockReset().mockReturnValue(null);
     mockStartNavigation.mockReset();
+    mockStopInstrumentation.mockReset();
     mockSubscribe.mockReset().mockReturnValue(() => {});
     mockGetOperationStats.mockReset().mockReturnValue(NO_OPS);
     mockExposeConsoleApi.mockReset();
@@ -276,6 +279,23 @@ describe('DebugLatencyHud', () => {
     mockGetCurrentRecord.mockReturnValue(FAST_PAGE);
     act(() => { jest.advanceTimersByTime(1100); });
     expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
+  });
+
+  it('when the poll sees debug mode go OFF it stops the instrumentation at once (record dropped, fetch restored) -- not just hides itself', () => {
+    mockIsActive.mockReturnValue(true);
+    mockGetCurrentRecord.mockReturnValue(FAST_PAGE);
+    render(React.createElement(DebugLatencyHud));
+    expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
+    act(() => { jest.advanceTimersByTime(1100); });
+    expect(mockStopInstrumentation).not.toHaveBeenCalled(); // still on: nothing to stop
+
+    mockIsActive.mockReturnValue(false);
+    act(() => { jest.advanceTimersByTime(1100); });
+    expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+    expect(mockStopInstrumentation).toHaveBeenCalledTimes(1);
+
+    act(() => { jest.advanceTimersByTime(1100); });
+    expect(mockStopInstrumentation).toHaveBeenCalledTimes(1); // only on the on→off edge
   });
 
   describe('PageLatencyNavigationBoundary', () => {

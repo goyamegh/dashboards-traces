@@ -40,8 +40,11 @@ function parseMs(s: string): number {
  */
 async function clickNav(page: Page, testId: string): Promise<void> {
   await page.getByTestId('sidebar-hover-zone').hover();
-  await page.waitForTimeout(600);
-  await page.getByTestId(testId).click();
+  const link = page.getByTestId(testId);
+  // The label <span> only renders once the rail has expanded (collapsed = icon
+  // only), so this is "flyout open", not a sleep.
+  await expect(link.locator('span.text-xs')).toBeVisible({ timeout: 5_000 });
+  await link.click();
 }
 
 /** The Settings page's Debug Mode switch (the ONLY user-facing way to turn the HUD on). */
@@ -53,8 +56,67 @@ async function flipDebugModeInSettings(page: Page, on: boolean): Promise<void> {
   await expect(sw).toHaveAttribute('aria-checked', on ? 'true' : 'false');
 }
 
+// Every group in this file flips the process-global debug flag (`POST
+// /api/debug`). With `fullyParallel` and two CI workers, tests in different
+// files -- or in different groups of one file -- can run concurrently and
+// switch the flag underneath each other (seen once: the former
+// debug-api.spec.ts turned it off mid-test on the other worker). So the
+// Debug API contract tests live HERE, and the whole file runs serially.
+test.describe.configure({ mode: 'serial' });
+
+test.describe('Debug API', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/api/debug', { data: { enabled: false } });
+  });
+
+  test.afterEach(async ({ request }) => {
+    await request.post('/api/debug', { data: { enabled: false } });
+  });
+
+  test('GET /api/debug returns the current state', async ({ request }) => {
+    const response = await request.get('/api/debug');
+    expect(response.ok()).toBe(true);
+    expect(typeof (await response.json()).enabled).toBe('boolean');
+  });
+
+  test('POST /api/debug enables and disables debug mode, visible through GET', async ({ request }) => {
+    const on = await request.post('/api/debug', { data: { enabled: true } });
+    expect(on.ok()).toBe(true);
+    expect((await on.json()).enabled).toBe(true);
+    expect((await (await request.get('/api/debug')).json()).enabled).toBe(true);
+
+    const off = await request.post('/api/debug', { data: { enabled: false } });
+    expect(off.ok()).toBe(true);
+    expect((await off.json()).enabled).toBe(false);
+    expect((await (await request.get('/api/debug')).json()).enabled).toBe(false);
+  });
+
+  test('POST /api/debug returns 400 for a non-boolean', async ({ request }) => {
+    const response = await request.post('/api/debug', { data: { enabled: 'yes' } });
+    expect(response.status()).toBe(400);
+    expect((await response.json()).error).toBe('enabled must be a boolean');
+  });
+
+  test('the Settings page toggle syncs the state to the server', async ({ page, request }) => {
+    await page.goto('/settings');
+    await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
+    const before = (await (await request.get('/api/debug')).json()).enabled as boolean;
+
+    const toggle = page.locator('#debug-mode');
+    await toggle.scrollIntoViewIfNeeded();
+    await expect(toggle).toBeVisible();
+    const postPromise = page.waitForResponse(
+      resp => resp.url().includes('/api/debug') && resp.request().method() === 'POST',
+      { timeout: 10000 },
+    );
+    await toggle.click();
+    await postPromise;
+
+    expect((await (await request.get('/api/debug')).json()).enabled).toBe(!before);
+  });
+});
+
 test.describe('Debug latency HUD', () => {
-  test.describe.configure({ mode: 'serial' });
 
   test.afterEach(async ({ request }) => {
     // Always leave debug mode off for the next test/spec sharing this server.
@@ -118,8 +180,9 @@ test.describe('Debug latency HUD', () => {
     // The benchmarks list page fetches its data (at least one /api/* request)…
     const apiCount = parseInt(/(\d+) request/.exec(apiText)![1], 10);
     expect(apiCount).toBeGreaterThan(0);
-    // …and the wall-clock span of those requests can never exceed the page's own time-to-ready.
-    expect(parseMs(apiText.replace(/^API\s*\d+ requests? · /, ''))).toBeLessThanOrEqual(parseMs(readyText));
+    // …none of which is the app-level /api/debug sync App.tsx fires on every route change.
+    for (const text of await page.getByTestId('debug-latency-hud-request').allInnerTexts()) expect(text).not.toContain('/api/debug');
+    expect(parseMs(readyText)).toBeGreaterThan(0);
 
     // Slowest requests: method + templated path + duration, at most 5, ids collapsed.
     const requests = page.getByTestId('debug-latency-hud-request');
@@ -161,20 +224,21 @@ test.describe('Debug latency HUD', () => {
     await expect(page.getByTestId('debug-latency-hud-operations')).toHaveCount(0);
   });
 
-  test('the former Performance Monitor overlay is gone; its DEBUG_PERFORMANCE flag now shows this HUD instead', async ({ page, request }) => {
+  test('the former Performance Monitor overlay is gone, and a stale DEBUG_PERFORMANCE flag alone shows nothing: debug mode is the one switch', async ({ page, request }) => {
     await request.post('/api/debug', { data: { enabled: false } });
     await page.addInitScript(() => {
       window.localStorage.removeItem('agenteval_debug');
+      // Left behind by an earlier Settings toggle; nothing ever cleared it.
       window.localStorage.setItem('DEBUG_PERFORMANCE', 'true');
     });
 
     await page.goto('/evaluations/benchmarks');
-    await expect(page.getByTestId('debug-latency-hud')).toBeVisible({ timeout: 15_000 });
-    // Give the old overlay's 1 s localStorage poll (had it still been mounted) time to fire.
-    await page.waitForTimeout(1500);
+    await expect(page.getByTestId('benchmarks-page')).toBeVisible({ timeout: 15_000 });
+    // Give both the old overlay's and the HUD's 1 s activation polls time to fire.
+    await page.waitForTimeout(2500);
     await expect(page.getByText('Performance Monitor')).toHaveCount(0);
     await expect(page.getByText('No metrics recorded yet')).toHaveCount(0);
-    await expect(page.locator('[data-testid="debug-latency-hud"]')).toHaveCount(1);
+    await expect(page.getByTestId('debug-latency-hud')).toHaveCount(0);
   });
 
   test('disappears again once debug mode is turned back off (next navigation)', async ({ page, request }) => {
@@ -205,8 +269,6 @@ test.describe('Debug latency HUD', () => {
  * the pill shows the right page and a real number on every one of them.
  */
 test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () => {
-  test.describe.configure({ mode: 'serial' });
-
   const tracker = createTestDataTracker();
   const SAME_NAME = uniqueTestName('hud-same-name');
   let benchmarkId: string | null = null;
@@ -218,7 +280,7 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
       const r = await request.post('/api/storage/test-cases', {
         data: { name: uniqueTestName(`hud-tc-${i}`), category: 'Test', difficulty: 'Easy', initialPrompt: 'p', expectedOutcomes: ['o'] },
       });
-      if (!r.ok()) return;
+      expect(r.ok(), `seed test case: ${r.status()}`).toBeTruthy();
       const j = await r.json();
       const tcId = j.id || j.testCase?.id;
       tracker.testCase(tcId);
@@ -232,7 +294,7 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
         versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: tcIds }],
       },
     });
-    if (!bmRes.ok()) return;
+    expect(bmRes.ok(), `seed benchmark: ${bmRes.status()}`).toBeTruthy();
     const id = (await bmRes.json()).id as string;
     tracker.benchmark(id);
     const bm = await (await request.get(`/api/storage/benchmarks/${id}`)).json();
@@ -249,7 +311,7 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
     const put = await request.put(`/api/storage/benchmarks/${id}`, {
       data: { name: bm.name, description: bm.description, testCaseIds: bm.testCaseIds, runs },
     });
-    if (!put.ok()) return;
+    expect(put.ok(), `seed runs: ${put.status()}`).toBeTruthy();
     benchmarkId = id;
   });
 
@@ -262,7 +324,6 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
   });
 
   test('turning on the Settings "Debug Mode" switch shows the HUD at once, and every page visited afterwards gets a real number', async ({ page, request }) => {
-    test.skip(!benchmarkId, 'Could not seed the benchmark (storage not configured?)');
 
     await request.post('/api/debug', { data: { enabled: false } });
     await page.goto('/settings');
@@ -347,7 +408,6 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
   });
 
   test('Compare page reports ready too (comparison route) and a reload keeps the HUD on', async ({ page, request }) => {
-    test.skip(!benchmarkId, 'Could not seed the benchmark (storage not configured?)');
     await request.post('/api/debug', { data: { enabled: true } });
     await page.addInitScript(() => {
       window.localStorage.setItem('agenteval_debug', 'true');

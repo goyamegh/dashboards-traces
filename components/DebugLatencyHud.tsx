@@ -5,10 +5,11 @@
 
 /**
  * Unobtrusive bottom-right HUD for the CURRENT page's latency, visible ONLY
- * when debug mode is enabled, this is a dev build, or the legacy
- * `localStorage.DEBUG_PERFORMANCE` flag is set. It polls that rule once a
- * second so a debug-mode toggle in another tab / the Settings page is picked
- * up without a hard refresh.
+ * when debug mode is enabled or this is a dev build. It polls that rule once
+ * a second so a debug-mode toggle in another tab / the Settings page is
+ * picked up without a hard refresh -- and when the rule flips to off it also
+ * stops the instrumentation at once (record dropped, `window.fetch`
+ * restored) instead of leaving it armed until the next route change.
  *
  * Collapsed pill: colour dot + `benchmark-runs · 13.6 s` — one number, the
  * time from route change until the page's data settled and rendered.
@@ -21,13 +22,14 @@
  * Everything resets on every route change.
  */
 
-import React, { useEffect, useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   isPageLatencyActive,
   getCurrentRecord,
   getOperationStats,
   startNavigation,
+  stopInstrumentation,
   classifyDuration,
   classifyPageReady,
   formatMs,
@@ -117,8 +119,14 @@ export const DebugLatencyHud: React.FC = () => {
 
   // Poll for the debug-mode toggle (Settings page / another tab flips
   // localStorage; import.meta.env.DEV never changes at runtime).
+  const wasActive = useRef(active);
   useEffect(() => {
-    const id = setInterval(() => setActive(isPageLatencyActive()), 1000);
+    const id = setInterval(() => {
+      const nowActive = isPageLatencyActive();
+      if (wasActive.current && !nowActive) stopInstrumentation();
+      wasActive.current = nowActive;
+      setActive(nowActive);
+    }, 1000);
     return () => clearInterval(id);
   }, []);
 

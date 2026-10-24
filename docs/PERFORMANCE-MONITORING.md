@@ -14,26 +14,26 @@ The traces page has been optimized with several key improvements:
 
 Operation timings are recorded and shown in the **debug latency HUD**
 (`components/DebugLatencyHud.tsx`, data in `lib/pageLatency.ts` +
-`lib/performance.ts`), which is active when any of these is true:
+`lib/performance.ts`), which is active when either of these is true:
 
-- Debug mode is on (Settings → "Debug Mode" switch, or `POST /api/debug`)
+- Debug mode is on (Settings → "Debug Mode" switch, or `POST /api/debug`;
+  the browser copy `localStorage.agenteval_debug` is synced from the server
+  on every route change)
 - This is a local dev build (`npm run dev`, `import.meta.env.DEV`)
-- The legacy flag is set from the browser console:
 
-  ```javascript
-  localStorage.setItem('DEBUG_PERFORMANCE', 'true')
-  ```
+The former overlay's console flag `localStorage.DEBUG_PERFORMANCE` still makes
+`lib/performance` record step timings, but it does NOT switch the HUD on:
+nothing ever clears that key, so a stale copy used to keep the overlay on
+after debug mode had been turned off elsewhere.
 
-The HUD appears in the bottom-right corner on the next navigation (no hard
-refresh needed — the activation rule is re-checked once a second).
+The HUD appears in the bottom-right corner within a second of switching debug
+mode on (placeholder until the first navigation; no hard refresh needed — the
+activation rule is re-checked once a second).
 
 ### Disable Performance Monitoring
 
-Turn debug mode off in Settings, or:
-
-```javascript
-localStorage.removeItem('DEBUG_PERFORMANCE')
-```
+Turn debug mode off in Settings (or `POST /api/debug {"enabled": false}`); the
+HUD disappears within a second and `window.fetch` is restored at once.
 
 To hide the HUD for the rest of the current page load only (e.g. in a dev
 build, where it is always active), expand it and click **hide**.
@@ -163,9 +163,9 @@ In code, import the same functions from `@/lib/performance`.
 
 ### HUD Not Appearing
 
-1. Check debug mode: `localStorage.getItem('agenteval_debug')` (or the legacy
-   `localStorage.getItem('DEBUG_PERFORMANCE')`) should return `"true"`
-2. Navigate to another page — the HUD starts on the next route change
+1. Check debug mode: `localStorage.getItem('agenteval_debug')` should return
+   `"true"` (it mirrors the server: `GET /api/debug`)
+2. Navigate to another page — the first number appears on the next route change
 
 ### No Metrics Showing
 

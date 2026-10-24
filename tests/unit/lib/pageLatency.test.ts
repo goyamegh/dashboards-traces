@@ -147,6 +147,13 @@ describe('lib/pageLatency', () => {
       mockIsDebugEnabled.mockReturnValue(true);
     });
 
+    /** markPageReady stamps two animation frames later (after commit + paint); fake rAF ticks every 16 ms. */
+    const PAINT_MS = 40;
+    const ready = (routeKey: string) => {
+      pageLatency.markPageReady(routeKey);
+      jest.advanceTimersByTime(PAINT_MS);
+    };
+
     it('starts a record with the mapped route key and a null renderMs/readyMs until measured', () => {
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs');
       const rec = pageLatency.getCurrentRecord();
@@ -166,14 +173,19 @@ describe('lib/pageLatency', () => {
       jest.advanceTimersByTime(50);
 
       pageLatency.markPageReady('benchmarks');
+      // "ready" = data loaded AND rendered: nothing is stamped until the page has painted…
+      expect(pageLatency.getCurrentRecord()!.readyMs).toBeNull();
+      expect(debugLog).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(PAINT_MS);
       const rec1 = pageLatency.getCurrentRecord();
       expect(rec1!.readyMs).not.toBeNull();
+      expect(rec1!.readyMs).toBeGreaterThanOrEqual(50); // …so the number includes the frames after the call
       expect(debugLog).toHaveBeenCalledTimes(1);
       expect(debugLog).toHaveBeenCalledWith('pageLatency', expect.stringMatching(/^benchmarks · ready \d+ ms · first paint \d+ ms · 0 api requests \/ 0 ms wall$/));
 
       const readyMsAfterFirstCall = rec1!.readyMs;
       jest.advanceTimersByTime(1000);
-      pageLatency.markPageReady('benchmarks'); // duplicate call (e.g. a manual refresh)
+      ready('benchmarks'); // duplicate call (e.g. a manual refresh)
       expect(pageLatency.getCurrentRecord()!.readyMs).toBe(readyMsAfterFirstCall);
       expect(debugLog).toHaveBeenCalledTimes(1);
     });
@@ -182,10 +194,10 @@ describe('lib/pageLatency', () => {
       pageLatency.startNavigation('/evaluations/benchmarks'); // -> 'benchmarks'
       pageLatency.startNavigation('/evaluations/runs'); // user already navigated on; current is now 'eval-runs'
 
-      pageLatency.markPageReady('benchmarks'); // late call from the unmounted page
+      ready('benchmarks'); // late call from the unmounted page
       expect(pageLatency.getCurrentRecord()!.readyMs).toBeNull();
 
-      pageLatency.markPageReady('eval-runs');
+      ready('eval-runs');
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
     });
 
@@ -246,7 +258,7 @@ describe('lib/pageLatency', () => {
 
       pageLatency.startNavigation('/evaluations/benchmarks'); // wraps the mock above
       const inFlight = fetch('/api/storage/in-flight'); // started BEFORE ready: the page's own request
-      pageLatency.markPageReady('benchmarks');
+      ready('benchmarks');
       await fetch('/api/storage/benchmarks'); // started AFTER ready: a late poll/refresh
       expect(pageLatency.getCurrentRecord()!.apiCount).toBe(0);
 
@@ -273,19 +285,30 @@ describe('lib/pageLatency', () => {
       expect(pageLatency.getCurrentRecord()!.apiCount).toBe(0);
     });
 
-    it('finalizes renderMs immediately in markPageReady if the page reports ready before the 2-frame render measurement fired (fast page)', () => {
+    it('finalizes renderMs together with readyMs if the page reports ready before the 2-frame render measurement fired (fast page)', () => {
       pageLatency.startNavigation('/evaluations/benchmarks');
       expect(pageLatency.getCurrentRecord()!.renderMs).toBeNull();
 
       pageLatency.markPageReady('benchmarks'); // fires before any timer advance
+      jest.advanceTimersByTime(PAINT_MS);
 
       const rec = pageLatency.getCurrentRecord()!;
       expect(rec.renderMs).not.toBeNull();
+      expect(rec.readyMs).not.toBeNull();
+    });
+
+    it('a markPageReady whose paint frames are cut short by a navigation never stamps the NEXT page', () => {
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      pageLatency.markPageReady('benchmarks'); // frames pending…
+      pageLatency.startNavigation('/evaluations/runs'); // …user navigates before they land
+      jest.advanceTimersByTime(PAINT_MS);
+      expect(pageLatency.getCurrentRecord()!.route).toBe('eval-runs');
+      expect(pageLatency.getCurrentRecord()!.readyMs).toBeNull();
     });
 
     it('keeps nothing about earlier pages: no history, no previous-page accessor', () => {
       pageLatency.startNavigation('/evaluations/benchmarks');
-      pageLatency.markPageReady('benchmarks');
+      ready('benchmarks');
       pageLatency.startNavigation('/evaluations/runs');
       const api = pageLatency as unknown as Record<string, unknown>;
       expect(api.getHistory).toBeUndefined();
@@ -330,7 +353,7 @@ describe('lib/pageLatency', () => {
       window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
       pageLatency.startNavigation('/settings'); // not an instrumented page
       jest.advanceTimersByTime(50); // first paint
-      await fetch('/api/debug');
+      await fetch('/api/storage/evaluators');
       expect(pageLatency.getCurrentRecord()!.settledMs).toBeNull();
 
       jest.advanceTimersByTime(999);
@@ -340,7 +363,7 @@ describe('lib/pageLatency', () => {
       expect(typeof settled).toBe('number');
       expect(pageLatency.getCurrentRecord()!.readyMs).toBeNull();
 
-      pageLatency.markPageReady('/settings'); // an explicit signal wins
+      ready('/settings'); // an explicit signal wins
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
     });
 
@@ -374,7 +397,7 @@ describe('lib/pageLatency', () => {
 
       await fetch('/api/storage/evaluation-runs/run-1'); // second burst still counts
       expect(pageLatency.getCurrentRecord()!.apiCount).toBe(2);
-      pageLatency.markPageReady('benchmark-runs');
+      ready('benchmark-runs');
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
     });
 
@@ -383,7 +406,7 @@ describe('lib/pageLatency', () => {
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1'); // Cases tab
       jest.advanceTimersByTime(50);
       await fetch('/api/storage/benchmarks/bench-1');
-      pageLatency.markPageReady('benchmark-runs');
+      ready('benchmark-runs');
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
 
       // The Runs tab is a navigate() to /runs: same route key, page stays
@@ -412,7 +435,7 @@ describe('lib/pageLatency', () => {
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs/run-1/inspect');
       jest.advanceTimersByTime(50);
       await fetch('/api/storage/benchmarks/bench-1');
-      pageLatency.markPageReady('run-inspector');
+      ready('run-inspector');
 
       pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs/run-2/inspect');
       const rec = pageLatency.getCurrentRecord()!;
@@ -421,7 +444,7 @@ describe('lib/pageLatency', () => {
       jest.advanceTimersByTime(1000); // estimate lands first
       expect(rec.settledMs).not.toBeNull();
       jest.advanceTimersByTime(400);
-      pageLatency.markPageReady('run-inspector'); // the page's own report
+      ready('run-inspector'); // the page's own report
       expect(rec.readyMs).toBeGreaterThan(rec.settledMs!);
     });
 
@@ -429,14 +452,14 @@ describe('lib/pageLatency', () => {
       window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
       pageLatency.startNavigation('/settings');
       jest.advanceTimersByTime(50);
-      await fetch('/api/debug');
+      await fetch('/api/storage/evaluators');
       jest.advanceTimersByTime(1000);
       const rec = pageLatency.getCurrentRecord()!;
       const settled = rec.settledMs;
       expect(settled).not.toBeNull();
 
       jest.advanceTimersByTime(30_000);
-      await fetch('/api/debug'); // a 30 s poll
+      await fetch('/api/storage/evaluators'); // a 30 s poll
       expect(rec.apiCount).toBe(1);
       expect(rec.settledMs).toBe(settled);
     });
@@ -469,7 +492,7 @@ describe('lib/pageLatency', () => {
       expect(listener).toHaveBeenCalled();
 
       const callsBeforeReady = listener.mock.calls.length;
-      pageLatency.markPageReady('benchmarks');
+      ready('benchmarks');
       expect(listener.mock.calls.length).toBeGreaterThan(callsBeforeReady);
 
       unsubscribe();
@@ -492,15 +515,59 @@ describe('lib/pageLatency', () => {
     });
   });
 
-  describe('activation via the legacy DEBUG_PERFORMANCE flag (former PerformanceOverlay path)', () => {
+  describe('activation: debug mode (server-synced) is the one switch', () => {
     afterEach(() => localStorage.removeItem('DEBUG_PERFORMANCE'));
 
-    it('is active when only localStorage.DEBUG_PERFORMANCE is set', () => {
-      expect(pageLatency.isPageLatencyActive()).toBe(false);
+    it('a stale legacy DEBUG_PERFORMANCE flag alone does NOT activate the HUD (nothing ever clears that key; it used to pin the HUD on after debug mode was turned off elsewhere)', () => {
       localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-      expect(pageLatency.isPageLatencyActive()).toBe(true);
+      expect(pageLatency.isPageLatencyActive()).toBe(false);
       pageLatency.startNavigation('/evaluations/benchmarks');
-      expect(pageLatency.getCurrentRecord()?.route).toBe('benchmarks');
+      expect(pageLatency.getCurrentRecord()).toBeNull();
+    });
+
+    it('stopInstrumentation() (debug mode switched off, seen by the HUD poll) drops the record and restores window.fetch immediately', () => {
+      mockIsDebugEnabled.mockReturnValue(true);
+      const original = window.fetch;
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      expect(window.fetch).not.toBe(original);
+      expect(pageLatency.getCurrentRecord()).not.toBeNull();
+
+      mockIsDebugEnabled.mockReturnValue(false);
+      pageLatency.stopInstrumentation();
+      expect(pageLatency.getCurrentRecord()).toBeNull();
+      expect(window.fetch).toBe(original);
+    });
+
+    it('unwrapping never clobbers a wrapper somebody else layered on top of ours', () => {
+      mockIsDebugEnabled.mockReturnValue(true);
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      const theirs = jest.fn() as unknown as typeof fetch;
+      window.fetch = theirs; // e.g. an instrumentation library installed after us
+      pageLatency.stopInstrumentation();
+      expect(window.fetch).toBe(theirs);
+    });
+  });
+
+  describe('isCountedApiUrl', () => {
+    it('counts only pathnames under /api/ -- relative or absolute to the configured backend -- not any URL containing "/api/"', () => {
+      expect(pageLatency.isCountedApiUrl('/api/storage/benchmarks?size=50')).toBe(true);
+      expect(pageLatency.isCountedApiUrl('http://localhost:4001/api/storage/runs/search')).toBe(true);
+      expect(pageLatency.isCountedApiUrl('/health')).toBe(false);
+      expect(pageLatency.isCountedApiUrl('/api')).toBe(false);
+      expect(pageLatency.isCountedApiUrl('https://third.party/docs?next=/api/foo')).toBe(false);
+      expect(pageLatency.isCountedApiUrl('https://cdn.example.com/v1/api/thing')).toBe(false);
+    });
+
+    it('excludes the app-level /api/debug sync App.tsx fires on every route change (it is not the page\'s work)', async () => {
+      mockIsDebugEnabled.mockReturnValue(true);
+      expect(pageLatency.isCountedApiUrl('/api/debug')).toBe(false);
+      expect(pageLatency.isCountedApiUrl('http://localhost:4001/api/debug')).toBe(false);
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+      pageLatency.startNavigation('/settings');
+      await fetch('/api/debug');
+      await fetch('/api/storage/test-cases');
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(1);
+      expect(pageLatency.getCurrentRecord()!.apiRequests[0].path).toBe('/api/storage/test-cases');
     });
   });
 

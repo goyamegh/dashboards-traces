@@ -5,10 +5,13 @@
 
 /**
  * Per-page latency instrumentation, active ONLY when debug mode is enabled
- * (see lib/debug.ts), this is a dev build (`import.meta.env.DEV`), or the
- * legacy `localStorage.DEBUG_PERFORMANCE` flag is set. When none is true every
+ * (see lib/debug.ts -- the Settings "Debug Mode" switch, server-synced) or
+ * this is a dev build (`import.meta.env.DEV`). When neither is true every
  * exported function is a no-op: no timers, no `fetch` wrapping, no state kept
- * — zero behaviour change for normal users.
+ * — zero behaviour change for normal users. (The former overlay's
+ * `localStorage.DEBUG_PERFORMANCE` console flag still makes `lib/performance`
+ * record steps, but it is NOT an activation channel for the HUD: it was never
+ * cleared by the server sync, so a stale copy kept the HUD on forever.)
  *
  * ONE record per navigation — the current page only, nothing is kept about
  * earlier pages:
@@ -20,10 +23,13 @@
  *      key so dynamic segments don't fragment the same page into many routes,
  *      and schedules a first-paint timestamp two animation frames out.
  *   2. `markPageReady(routeKey)` — a one-line call each instrumented page
- *      makes once its own primary data fetch(es) settle. `routeKey` must be
- *      the SAME key `routeKeyFromPath` produces for that page's route: a
- *      stale call from a page the user has since navigated away from is
- *      ignored. Pages whose route is NOT in `ROUTE_KEY_PATTERNS` (i.e. that
+ *      makes once its own primary data fetch(es) settle. The number is
+ *      stamped two animation frames later, i.e. after React has committed
+ *      and the browser has painted the loaded content -- "ready" means
+ *      data loaded AND rendered, not "the last promise resolved". `routeKey`
+ *      must be the SAME key `routeKeyFromPath` produces for that page's
+ *      route: a stale call from a page the user has since navigated away
+ *      from is ignored. Pages whose route is NOT in `ROUTE_KEY_PATTERNS` (i.e. that
  *      don't report readiness) get an automatic, final estimate instead
  *      (`settledMs`): first paint + every `/api/*` request settled, then 1 s
  *      of quiet — i.e. "route change → last data fetch settled". The HUD
@@ -35,7 +41,9 @@
  *      ready again, which left the pill on `…` for good. Those records get
  *      the estimate too; an explicit `markPageReady` still wins if the page
  *      does reload (e.g. the inspector switching to another run).
- *   3. While a navigation is active, `window.fetch` calls to `/api/*` that
+ *   3. While a navigation is active, `window.fetch` calls whose pathname is
+ *      under `/api/` (except `/api/debug`, the app-level sync App.tsx fires
+ *      on every route change -- not the page's own work) that
  *      START before the record is final (`readyMs` / `settledMs` stamped) are
  *      recorded (method, path template with ids collapsed to `:id`,
  *      duration) into whichever record was current WHEN THE CALL STARTED — a
@@ -189,6 +197,8 @@ interface Bookkeeping {
   lastResponseEndPerf: number | null;
   /** Route is one of the instrumented pages that will call markPageReady itself. */
   reportsReady: boolean;
+  /** markPageReady was called; the stamp lands after the next paint. */
+  readyPending: boolean;
 }
 const bookkeeping = new WeakMap<PageLatencyRecord, Bookkeeping>();
 
@@ -197,6 +207,7 @@ let listeners: Listener[] = [];
 
 let fetchWrapped = false;
 let originalFetch: typeof fetch | null = null;
+let wrappedFetch: typeof fetch | null = null;
 
 /** Route-pattern → stable key. Order matters: most specific patterns first. */
 const ROUTE_KEY_PATTERNS: Array<[RegExp, string]> = [
@@ -255,22 +266,14 @@ function isDevBuild(): boolean {
 }
 
 /**
- * The pre-HUD PerformanceOverlay was switched on by setting
- * `localStorage.DEBUG_PERFORMANCE = 'true'` from the browser console (still
- * documented, and still written by the Settings debug toggle) -- keep that
- * path working for the merged HUD.
+ * Whether instrumentation should be doing ANYTHING right now: debug mode
+ * (the one user-facing switch, kept in sync with the server by App.tsx) or a
+ * dev build. Deliberately NOT the legacy `DEBUG_PERFORMANCE` console flag --
+ * nothing ever clears that key, so it would pin the HUD on after debug mode
+ * was turned off elsewhere.
  */
-function isLegacyPerfFlagSet(): boolean {
-  try {
-    return typeof window !== 'undefined' && localStorage.getItem('DEBUG_PERFORMANCE') === 'true';
-  } catch {
-    return false;
-  }
-}
-
-/** Whether instrumentation should be doing ANYTHING right now. */
 export function isPageLatencyActive(): boolean {
-  return isDebugEnabled() || isDevBuild() || isLegacyPerfFlagSet();
+  return isDebugEnabled() || isDevBuild();
 }
 
 function notify(): void {
@@ -315,6 +318,25 @@ export function exposeConsoleApi(): void {
 export function removeConsoleApi(): void {
   if (typeof window === 'undefined') return;
   delete (window as unknown as Record<string, unknown>)[CONSOLE_API_KEY];
+}
+
+/**
+ * App-level requests that fire on every route change regardless of page
+ * (App.tsx `DebugStateSync` → GET /api/debug); charging them to the page
+ * would put "1 request" on pages that made none.
+ */
+const IGNORED_API_PATHS = new Set(['/api/debug']);
+
+/** True for a request to this app's API: pathname under `/api/` (same or configured backend origin), minus the ignored app-level sync. */
+export function isCountedApiUrl(url: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(url, typeof window !== 'undefined' ? window.location.href : 'http://placeholder.local').pathname;
+  } catch {
+    return false;
+  }
+  if (!pathname.startsWith('/api/')) return false;
+  return !IGNORED_API_PATHS.has(pathname.replace(/\/+$/, ''));
 }
 
 function apiUrlFrom(input: Parameters<typeof fetch>[0]): string {
@@ -383,7 +405,7 @@ function wrapFetch(): void {
   const boundOriginal = originalFetch.bind(window);
   const wrapped: typeof fetch = async (...args: Parameters<typeof fetch>) => {
     const url = apiUrlFrom(args[0]);
-    const isApiCall = url.includes('/api/');
+    const isApiCall = isCountedApiUrl(url);
     // Attribute to whichever navigation is active WHEN THE CALL STARTS, not
     // whichever is active when it resolves -- a slow request started on
     // page A that resolves after the user has already navigated to page B
@@ -431,15 +453,30 @@ function wrapFetch(): void {
     }
   };
   window.fetch = wrapped;
+  wrappedFetch = wrapped;
   fetchWrapped = true;
 }
 
 function unwrapFetch(): void {
-  if (fetchWrapped && originalFetch && typeof window !== 'undefined') {
+  // Only restore if ours is still the installed one: another wrapper layered
+  // on top (devtools, an instrumentation library) must not be clobbered.
+  if (fetchWrapped && originalFetch && typeof window !== 'undefined' && window.fetch === wrappedFetch) {
     window.fetch = originalFetch;
   }
   fetchWrapped = false;
   originalFetch = null;
+  wrappedFetch = null;
+}
+
+/**
+ * Debug mode was just switched off (the HUD's activation poll saw it): drop
+ * the current record, stop the settle timer and restore `window.fetch` NOW
+ * rather than on the next route change.
+ */
+export function stopInstrumentation(): void {
+  clearSettleTimer();
+  current = null;
+  unwrapFetch();
 }
 
 
@@ -481,6 +518,7 @@ export function startNavigation(pathname: string): void {
     firstRequestStartPerf: null,
     lastResponseEndPerf: null,
     reportsReady: isInstrumentedRoute(route) && !inPageNavigation,
+    readyPending: false,
   };
   bookkeeping.set(record, bk);
   if (typeof requestAnimationFrame === 'function') {
@@ -512,20 +550,34 @@ export function markPageReady(routeKey: string): void {
   if (!isPageLatencyActive() || !current) return;
   if (current.route !== routeKey) return;
   if (current.readyMs !== null) return;
-  // First paint is measured 2 animation frames after navigation start; by
-  // the time a page's primary data load resolves that has virtually always
-  // already fired, but finalize it here too for the rare case a page
-  // reports ready before its own first paint has been observed.
-  if (current.renderMs === null) {
-    current.renderMs = Math.round(performance.now() - currentStartPerf);
+  const record = current;
+  const bk = bookkeeping.get(record);
+  if (!bk || bk.readyPending) return;
+  bk.readyPending = true;
+  const stamp = () => {
+    if (current !== record || record.readyMs !== null) return; // navigated away meanwhile
+    const now = Math.round(performance.now() - bk.startPerf);
+    // First paint is measured 2 animation frames after navigation start; by
+    // now it has virtually always fired, but finalize it here too for the
+    // rare case a page is ready before its own first paint was observed.
+    if (record.renderMs === null) record.renderMs = now;
+    record.readyMs = now;
+    clearSettleTimer();
+    debug(
+      'pageLatency',
+      `${record.route} · ready ${formatMs(record.readyMs)} · first paint ${formatMs(record.renderMs)} · ${record.apiCount} api requests / ${formatMs(record.apiWallMs)} wall`,
+    );
+    notify();
+  };
+  // The page calls this right after its setState(...) calls -- BEFORE React
+  // has committed the loaded content or the browser painted it. Two frames
+  // later both have happened, so the number includes rendering the data,
+  // which is what "ready" promises.
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(stamp));
+  } else {
+    stamp();
   }
-  current.readyMs = Math.round(performance.now() - currentStartPerf);
-  clearSettleTimer();
-  debug(
-    'pageLatency',
-    `${current.route} · ready ${formatMs(current.readyMs)} · first paint ${formatMs(current.renderMs)} · ${current.apiCount} api requests / ${formatMs(current.apiWallMs)} wall`,
-  );
-  notify();
 }
 
 /** The in-progress (or last-started) navigation's record, or null. */

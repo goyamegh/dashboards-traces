@@ -409,8 +409,7 @@ To configure additional agents (LangGraph, ML-Commons, HolmesGPT, Claude Code, e
 Debug logging can also be toggled at runtime via the Settings page "Verbose Logging" toggle or the `POST /api/debug` endpoint. When enabled, structured debug output appears in both the browser console and server terminal.
 
 **Page latency HUD:** with debug mode enabled (or in a local dev build,
-`import.meta.env.DEV`, or with the legacy `localStorage.DEBUG_PERFORMANCE =
-'true'` flag set from the browser console), a one-line pill in the bottom-right
+`import.meta.env.DEV`), a one-line pill in the bottom-right
 corner shows the CURRENT page and one number — time-to-ready, i.e. route change
 → the page's data settled and its content rendered — with a colour dot (green
 < 1 s, amber < 3 s, red otherwise), e.g. `● benchmark-runs · 13.6 s`. The six

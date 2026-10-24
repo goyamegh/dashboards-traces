@@ -48,8 +48,9 @@ export function subscribeToMetrics(fn: MetricsListener): () => void {
 }
 
 // Performance monitoring enabled in development, when the app's debug mode
-// (lib/debug.ts, the Settings "Verbose Logging" toggle) is on, or when the
-// legacy `DEBUG_PERFORMANCE` flag is set.
+// (lib/debug.ts, the Settings "Debug Mode" switch) is on, or when the
+// legacy `DEBUG_PERFORMANCE` console flag is set (recording only -- the HUD's
+// visibility follows debug mode, see lib/pageLatency.ts).
 const isEnabled = () => {
   if (typeof window !== 'undefined') {
     return localStorage.getItem('DEBUG_PERFORMANCE') === 'true' ||
