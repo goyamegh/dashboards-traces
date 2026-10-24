@@ -183,6 +183,8 @@ export const DebugLatencyHud: React.FC = () => {
   const band = ready === null ? null : classifyPageReady(ready);
   const steps = ops.stats.slice(0, MAX_STEPS);
 
+  // bottom-16: the Assistant launcher (and the Ask nudge) own the bottom-right
+  // corner itself (`fixed right-4 bottom-4`); the HUD sits just above them.
   return (
     <div
       data-testid="debug-latency-hud"
@@ -190,7 +192,7 @@ export const DebugLatencyHud: React.FC = () => {
       onClick={() => setPinned(v => !v)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="fixed bottom-3 right-3 z-50 select-none"
+      className="fixed bottom-16 right-3 z-50 select-none"
     >
       {expanded && current && (
         <div

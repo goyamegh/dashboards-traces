@@ -416,8 +416,9 @@ corner shows the CURRENT page and one number — time-to-ready, i.e. route chang
 < 1 s, amber < 3 s, red otherwise), e.g. `● benchmark-runs · 13.6 s`. The six
 heaviest evals3/comparison/traces pages (Benchmarks, Benchmark Runs, Evaluation
 Runs, Run Inspector, Comparison, Agent Traces) report readiness themselves; for
-every other page it is estimated (first paint + last `/api/*` response + 1 s of
-quiet, marked `~`). Click the pill to pin it open (hover or hold ⌥ to peek):
+every other page — and for an in-page navigation that keeps the same route, such
+as the benchmark page's Cases → Runs tab — it is estimated (first paint + last
+`/api/*` response + 1 s of quiet, marked `~`). Click the pill to pin it open (hover or hold ⌥ to peek):
 still the current page only — `Page ready`, `First paint` (the new page's first
 frame, before any data), `API N requests · X wall` (wall-clock span from the
 first request start to the last response end; requests overlap, so durations
