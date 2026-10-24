@@ -21,8 +21,13 @@ interface Scenario {
   connectorType: string;
   report: Record<string, unknown>;
   spans: number;
-  metrics: 'ok' | 'no-spans' | 'unconfigured';
+  metrics: 'ok' | 'no-spans' | 'eval-only' | 'unconfigured';
   evaluateEvents?: Array<Record<string, unknown>>;
+  /**
+   * What GET /health reports under `telemetry`, per call (first = preflight,
+   * second = after the run). `undefined` = a server that predates the field.
+   */
+  health?: Array<Record<string, unknown>>;
 }
 
 interface MockBackend { server: Server; url: string; deletes: string[]; tracesBodies: any[] }
@@ -30,13 +35,17 @@ interface MockBackend { server: Server; url: string; deletes: string[]; tracesBo
 function startMockBackend(s: Scenario): Promise<MockBackend> {
   const deletes: string[] = [];
   const tracesBodies: any[] = [];
+  let healthCalls = 0;
   const server = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://localhost');
     const path = url.pathname;
     const send = (code: number, body: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
     const readBody = () => new Promise<any>((r) => { let raw = ''; req.on('data', (c) => { raw += c; }); req.on('end', () => { try { r(JSON.parse(raw || '{}')); } catch { r({}); } }); });
 
-    if (path === '/health') return send(200, { status: 'ok' });
+    if (path === '/health') {
+      const telemetry = s.health?.[Math.min(healthCalls++, (s.health?.length ?? 1) - 1)];
+      return send(200, { status: 'ok', ...(telemetry ? { telemetry } : {}) });
+    }
     if (path === '/api/agents') return send(200, { agents: [{ key: 'example-agent', connectorType: s.connectorType }], total: 1 });
     if (path === '/api/models') return send(200, { models: [{ key: 'judge-model' }] });
     if (path === '/api/evaluate' && req.method === 'POST') {
@@ -57,7 +66,9 @@ function startMockBackend(s: Scenario): Promise<MockBackend> {
       return readBody().then((b) => send(200, {
         metrics: (b.runIds as string[]).map((k) => s.metrics === 'ok'
           ? { runId: k, hasSpans: true, totalTokens: 1234, llmCalls: 3, costUsd: 0.01, status: 'success' }
-          : { runId: k, hasSpans: false, totalTokens: 0, llmCalls: 0, costUsd: 0, status: 'pending' }),
+          : s.metrics === 'eval-only'
+            ? { runId: k, hasSpans: false, evalOnlySpans: 1, totalTokens: 0, llmCalls: 0, costUsd: 0, status: 'pending' }
+            : { runId: k, hasSpans: false, totalTokens: 0, llmCalls: 0, costUsd: 0, status: 'pending' }),
         aggregate: {},
       }));
     }
@@ -93,7 +104,8 @@ describe('scripts/smoke-telemetry.ts', () => {
     const r = parse(stdout);
     expect(code).toBe(0);
     expect(r.ok).toBe(true);
-    expect(r.checks.map((c: any) => c.status)).toEqual(['PASS', 'PASS', 'PASS', 'PASS', 'PASS']);
+    // Check 5 is SKIP: this backend predates the /health `telemetry` block.
+    expect(r.checks.map((c: any) => c.status)).toEqual(['PASS', 'PASS', 'PASS', 'PASS', 'PASS', 'SKIP']);
     expect(r.spansFound).toBe(3);
     // Correlates by A OR B: both ids sent to /api/traces.
     expect(backend.tracesBodies[0]).toMatchObject({ traceId: 'abc', runIds: ['echoed-1'] });
@@ -130,6 +142,57 @@ describe('scripts/smoke-telemetry.ts', () => {
     expect(code).toBe(1);
     expect(statusOf(r, /spans found/)).toBe('PASS');
     expect(statusOf(r, /metrics/)).toBe('FAIL');
+  }, 90_000);
+
+  it('agent DOWN (report.failureStage=agent): runId + metrics become WARN "agent unreachable", the eval span is still required (PASS → exit 0)', async () => {
+    const telemetryOk = (exported: number) => ({ enabled: true, exporter: 'otlp', exportedSpans: exported, failedBatches: 0, droppedSpans: 0, endpoint: 'http://127.0.0.1:1/v1/traces' });
+    backend = await startMockBackend({
+      connectorType: 'rest',
+      report: { traceId: 'abc', status: 'failed', failureStage: 'agent', error: 'Agent request to POST http://127.0.0.1:1/ask failed after 2ms: ECONNREFUSED', agentError: { kind: 'connection' } },
+      spans: 1, metrics: 'eval-only',
+      health: [telemetryOk(4), telemetryOk(5)],
+    });
+    const { code, stdout } = await runScript(['--base', backend.url, '--agent-key', 'example-agent', '--spans-wait-ms', '0', '--json']);
+    const r = parse(stdout);
+    expect(code).toBe(0);
+    expect(r.agentFailure).toMatch(/ECONNREFUSED/);
+    expect(statusOf(r, /traceId/)).toBe('PASS');
+    expect(statusOf(r, /runId/)).toBe('WARN');
+    expect(r.checks.find((c: any) => /runId/.test(c.name)).detail).toMatch(/agent unreachable/);
+    expect(statusOf(r, /spans found/)).toBe('PASS');
+    expect(statusOf(r, /metrics/)).toBe('WARN');
+    expect(r.checks.find((c: any) => /metrics/.test(c.name)).detail).toMatch(/agent unreachable — no agent spans expected \(1 eval span\(s\) matched\)/);
+    expect(statusOf(r, /eval span export/)).toBe('PASS');
+    expect(r.checks.find((c: any) => /eval span export/.test(c.name)).detail).toMatch(/1 span\(s\) acknowledged → http:\/\/127\.0\.0\.1:1\/v1\/traces/);
+  }, 90_000);
+
+  it('agent DOWN but the eval span never arrives: check 3 stays FAIL and check 5 names the exporter error (exit 1)', async () => {
+    backend = await startMockBackend({
+      connectorType: 'rest',
+      report: { traceId: 'abc', status: 'failed', failureStage: 'agent', error: 'ECONNREFUSED' },
+      spans: 0, metrics: 'no-spans',
+      health: [
+        { enabled: true, exporter: 'otlp', exportedSpans: 0, failedBatches: 2, droppedSpans: 2 },
+        { enabled: true, exporter: 'otlp', exportedSpans: 0, failedBatches: 3, droppedSpans: 3, lastError: { at: '2026-01-01T00:00:00.000Z', message: 'HTTP 404 Not Found {"message":"Not Found"}' } },
+      ],
+    });
+    const { code, stdout } = await runScript(['--base', backend.url, '--agent-key', 'example-agent', '--spans-wait-ms', '0', '--json']);
+    const r = parse(stdout);
+    expect(code).toBe(1);
+    expect(statusOf(r, /spans found/)).toBe('FAIL');
+    expect(statusOf(r, /metrics/)).toBe('WARN'); // agent down: no agent spans expected
+    expect(statusOf(r, /eval span export/)).toBe('FAIL');
+    expect(r.checks.find((c: any) => /eval span export/.test(c.name)).detail).toMatch(/1 export batch\(es\) failed during this run: HTTP 404 Not Found/);
+  }, 90_000);
+
+  it('agent UP but it emitted nothing (metrics matched only the eval span): check 4 stays FAIL and says so', async () => {
+    backend = await startMockBackend({ connectorType: 'rest', report: { traceId: 'abc', runId: 'r' }, spans: 1, metrics: 'eval-only', health: [{ enabled: false }] });
+    const { code, stdout } = await runScript(['--base', backend.url, '--agent-key', 'example-agent', '--spans-wait-ms', '0', '--json']);
+    const r = parse(stdout);
+    expect(code).toBe(1);
+    expect(statusOf(r, /metrics/)).toBe('FAIL');
+    expect(r.checks.find((c: any) => /metrics/.test(c.name)).detail).toMatch(/only Agent Health's own 1 eval span\(s\) matched/);
+    expect(statusOf(r, /eval span export/)).toBe('FAIL'); // telemetry disabled on the server
   }, 90_000);
 
   it('--keep leaves the report in place; unknown agent / flag exit 2', async () => {

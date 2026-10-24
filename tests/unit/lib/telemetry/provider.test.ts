@@ -9,6 +9,7 @@ import {
   isEvalTelemetryEnabled,
   shutdownEvalTracer,
   getEvalTracer,
+  getEvalExportStatus,
 } from '@/lib/telemetry/provider';
 
 // Mock OTel SDK to avoid actual network connections
@@ -21,6 +22,7 @@ jest.mock('@opentelemetry/sdk-trace-node', () => {
       shutdown: mockShutdown,
     })),
     BatchSpanProcessor: jest.fn(),
+    SimpleSpanProcessor: jest.fn(),
   };
 });
 
@@ -151,6 +153,46 @@ describe('Telemetry Provider', () => {
 
       // Still enabled from first call
       expect(isEvalTelemetryEnabled()).toBe(true);
+    });
+
+    it('completes a base url (no path) to /v1/traces with a warning and reports it as the exporter endpoint', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+      const logSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      initEvalTracerProvider({ enabled: true, exporterEndpoint: 'https://abc123.execute-api.us-east-1.amazonaws.com' });
+
+      expect(warnSpy).toHaveBeenCalledWith('[Telemetry] Exporter endpoint https://abc123.execute-api.us-east-1.amazonaws.com has no path; using https://abc123.execute-api.us-east-1.amazonaws.com/v1/traces (OTLP/HTTP traces are received at /v1/traces)');
+      expect(logSpy).toHaveBeenCalledWith('[Telemetry] Evaluation telemetry enabled → OTLP (https://abc123.execute-api.us-east-1.amazonaws.com/v1/traces)');
+      expect(getEvalExportStatus()).toEqual({
+        exporter: 'otlp', endpoint: 'https://abc123.execute-api.us-east-1.amazonaws.com/v1/traces',
+        exportedSpans: 0, failedBatches: 0, droppedSpans: 0, lastError: undefined,
+      });
+      warnSpy.mockRestore(); logSpy.mockRestore();
+    });
+
+    it('uses a full url verbatim (no warning) and the OpenSearch exporter when no explicit OTLP endpoint is set', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+      initEvalTracerProvider({ enabled: true, exporterEndpoint: 'https://pipeline.example.com/otel-trace-abc/v1/traces' });
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(getEvalExportStatus()).toMatchObject({ exporter: 'otlp', endpoint: 'https://pipeline.example.com/otel-trace-abc/v1/traces' });
+      warnSpy.mockRestore();
+    });
+
+    it('a base url equal to the default collector counts as the default → OpenSearch direct export when configured', async () => {
+      initEvalTracerProvider({
+        enabled: true,
+        exporterEndpoint: 'http://localhost:4318',
+        opensearch: { endpoint: 'https://os.example.com:9200', indexName: 'otel-v1-apm-span' },
+      });
+      expect(getEvalExportStatus()).toMatchObject({ exporter: 'opensearch', endpoint: 'https://os.example.com:9200', exportedSpans: 0 });
+    });
+
+    it('export status is undefined while telemetry is disabled / after shutdown', async () => {
+      expect(getEvalExportStatus()).toBeUndefined();
+      initEvalTracerProvider({ enabled: true, exporterEndpoint: 'http://collector:4318/v1/traces' });
+      expect(getEvalExportStatus()).toBeDefined();
+      await shutdownEvalTracer();
+      expect(getEvalExportStatus()).toBeUndefined();
     });
   });
 

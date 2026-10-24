@@ -15,6 +15,13 @@ jest.mock('@/server/services/codingAgents', () => ({
   codingAnalyticsEnabled: true,
 }));
 
+// Eval telemetry export status (lib/telemetry/exportMonitor.ts) — swapped per test.
+const telemetryMock = { enabled: false as boolean, status: undefined as any };
+jest.mock('@/lib/telemetry', () => ({
+  isEvalTelemetryEnabled: () => telemetryMock.enabled,
+  getEvalExportStatus: () => telemetryMock.status,
+}));
+
 import healthRoutes from '@/server/routes/health';
 
 // Helper to create mock request/response. `remoteAddress` defaults to
@@ -97,6 +104,40 @@ describe('Health Routes', () => {
       // non-sensitive fields still returned
       expect(payload.status).toBe('ok');
       expect(payload.features).toBeDefined();
+    });
+
+    describe('telemetry block (eval span export health)', () => {
+      const handle = (remoteAddress?: string) => {
+        const { req, res } = createMocks(remoteAddress);
+        const routes = (healthRoutes as any).stack;
+        routes.find((l: any) => l.route && l.route.path === '/health').route.stack[0].handle(req, res);
+        return (res.json as jest.Mock).mock.calls[0][0];
+      };
+
+      afterEach(() => { telemetryMock.enabled = false; telemetryMock.status = undefined; });
+
+      it('reports enabled:false when eval telemetry is off', () => {
+        expect(handle().telemetry).toEqual({ enabled: false });
+      });
+
+      it('reports the exporter counters + last error, with the endpoint for loopback callers only', () => {
+        telemetryMock.enabled = true;
+        telemetryMock.status = {
+          exporter: 'otlp', endpoint: 'https://gw.example.com/v1/traces',
+          exportedSpans: 7, failedBatches: 2, droppedSpans: 2,
+          lastError: { at: '2026-01-01T00:00:00.000Z', message: 'HTTP 404 Not Found' },
+          lastSuccessAt: '2026-01-01T00:01:00.000Z',
+        };
+        expect(handle().telemetry).toEqual({
+          enabled: true, exporter: 'otlp', endpoint: 'https://gw.example.com/v1/traces',
+          exportedSpans: 7, failedBatches: 2, droppedSpans: 2,
+          lastError: { at: '2026-01-01T00:00:00.000Z', message: 'HTTP 404 Not Found' },
+          lastSuccessAt: '2026-01-01T00:01:00.000Z',
+        });
+        const remote = handle('10.0.0.5').telemetry;
+        expect(remote.endpoint).toBeUndefined();
+        expect(remote).toMatchObject({ enabled: true, exportedSpans: 7, failedBatches: 2 });
+      });
     });
   });
 });

@@ -91,7 +91,10 @@ export interface TelemetryConfig {
   enabled?: boolean;
 
   /**
-   * OTLP exporter endpoint
+   * OTLP/HTTP traces endpoint — the FULL url (`…/v1/traces`). A base url with
+   * no path is completed to `/v1/traces` at startup (with a warning), the way
+   * the OTel SDK completes `OTEL_EXPORTER_OTLP_ENDPOINT`; any other path is
+   * used verbatim. Export failures are counted on `GET /health` → `telemetry`.
    * @default 'http://localhost:4318/v1/traces' (can also be set via OTEL_EVAL_EXPORTER_ENDPOINT)
    */
   exporterEndpoint?: string;

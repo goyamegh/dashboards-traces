@@ -17,8 +17,15 @@ export {
   flushEvalTracer,
   shutdownEvalTracer,
   resolveEvalTelemetryConfig,
+  getEvalExportStatus,
   type EvalTelemetryConfig,
 } from './provider.js';
+
+export {
+  normalizeOtlpTracesEndpoint,
+  MonitoredSpanExporter,
+  type EvalExportStatus,
+} from './exportMonitor.js';
 
 export {
   startTestSuiteRunSpan,

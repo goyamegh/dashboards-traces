@@ -11,6 +11,7 @@ import { Request, Response, Router } from 'express';
 import { readEnv } from '@/lib/envCompat';
 import { getVersion } from '../utils/version';
 import { codingAnalyticsEnabled } from '../services/codingAgents';
+import { getEvalExportStatus, isEvalTelemetryEnabled } from '@/lib/telemetry';
 
 const router = Router();
 
@@ -26,6 +27,18 @@ const STARTED_AT = new Date(Date.now() - Math.round(process.uptime() * 1000)).to
 function isLoopback(req: Request): boolean {
   const addr = req.socket?.remoteAddress ?? '';
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+/**
+ * Eval telemetry export counters. The exporter url is a deployment detail
+ * (pipeline / gateway address) — like `instance`, only loopback peers see it;
+ * remote callers still get the counters and the last error.
+ */
+function telemetryHealth(loopback: boolean) {
+  const status = getEvalExportStatus();
+  if (!status) return { enabled: isEvalTelemetryEnabled() };
+  const { endpoint, ...counters } = status;
+  return { enabled: true, ...counters, ...(loopback ? { endpoint } : {}) };
 }
 
 /**
@@ -46,6 +59,11 @@ router.get('/health', (req: Request, res: Response) => {
     features: {
       codingAgentAnalytics: codingAnalyticsEnabled,
     },
+    // Eval telemetry export health (lib/telemetry/exportMonitor.ts): whether
+    // the `test_case` spans this server emits actually reach the trace
+    // store. A report with a traceId but 0 exported spans is an exporter
+    // problem (wrong url / auth / pipeline down), not a correlation one.
+    telemetry: telemetryHealth(isLoopback(req)),
     // Instance identity — used for ownership checks; loopback-only (see above).
     // `port` reflects the *actual* bound port (AH_PORT is rewritten to the
     // listening port after auto-increment), not the originally requested one.

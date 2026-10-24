@@ -17,6 +17,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { EVAL_TRACER_NAME } from './constants.js';
 import { OpenSearchSpanExporter, type OpenSearchExporterConfig } from './opensearchExporter.js';
+import { MonitoredSpanExporter, normalizeOtlpTracesEndpoint, type EvalExportStatus } from './exportMonitor.js';
 
 /**
  * Configuration for evaluation telemetry
@@ -36,6 +37,7 @@ export interface EvalTelemetryConfig {
 
 let provider: NodeTracerProvider | null = null;
 let telemetryEnabled = false;
+let monitoredExporter: MonitoredSpanExporter | null = null;
 
 /**
  * Resolve telemetry config from environment variables and optional user config
@@ -96,28 +98,41 @@ export function initEvalTracerProvider(config: EvalTelemetryConfig): void {
   //   2. OpenSearch direct when observability data source is configured
   //   3. OTLP/HTTP with default endpoint as last resort
   const spanProcessors = [];
-  const hasExplicitOtlpEndpoint = config.exporterEndpoint !== 'http://localhost:4318/v1/traces';
+  // A base url (no path) is completed to `/v1/traces` the way the OTel SDK
+  // completes OTEL_EXPORTER_OTLP_ENDPOINT — the exporter itself POSTs to the
+  // url verbatim, and a receiver answers `/` with 404 for every batch
+  // (lib/telemetry/exportMonitor.ts).
+  const otlp = normalizeOtlpTracesEndpoint(config.exporterEndpoint);
+  if (otlp.appendedPath) {
+    console.warn(`[Telemetry] Exporter endpoint ${config.exporterEndpoint} has no path; using ${otlp.url} (OTLP/HTTP traces are received at /v1/traces)`);
+  }
+  const hasExplicitOtlpEndpoint = otlp.url !== 'http://localhost:4318/v1/traces';
 
+  // Every exporter is wrapped so export failures are counted and logged
+  // (the SDK only reports them via the unregistered `diag` logger).
+  const makeOtlp = (): MonitoredSpanExporter => {
+    const otlpExporter = new OTLPTraceExporter({
+      url: otlp.url,
+      headers: config.exporterHeaders,
+    });
+    const m = new MonitoredSpanExporter(otlpExporter, 'otlp', otlp.url);
+    spanProcessors.push(new BatchSpanProcessor(m));
+    console.log(`[Telemetry] Evaluation telemetry enabled → OTLP (${otlp.url})`);
+    return m;
+  };
+
+  let monitor: MonitoredSpanExporter;
   if (hasExplicitOtlpEndpoint) {
     // User explicitly configured an OTLP endpoint (e.g., OSIS pipeline) — prefer it
-    const otlpExporter = new OTLPTraceExporter({
-      url: config.exporterEndpoint,
-      headers: config.exporterHeaders,
-    });
-    spanProcessors.push(new BatchSpanProcessor(otlpExporter));
-    console.log(`[Telemetry] Evaluation telemetry enabled → OTLP (${config.exporterEndpoint})`);
+    monitor = makeOtlp();
   } else if (config.opensearch) {
     const osExporter = new OpenSearchSpanExporter(config.opensearch);
+    monitor = new MonitoredSpanExporter(osExporter, 'opensearch', config.opensearch.endpoint);
     // Use SimpleSpanProcessor for immediate export (eval spans are infrequent)
-    spanProcessors.push(new SimpleSpanProcessor(osExporter));
+    spanProcessors.push(new SimpleSpanProcessor(monitor));
     console.log(`[Telemetry] Evaluation telemetry enabled → OpenSearch direct (${config.opensearch.endpoint})`);
   } else {
-    const otlpExporter = new OTLPTraceExporter({
-      url: config.exporterEndpoint,
-      headers: config.exporterHeaders,
-    });
-    spanProcessors.push(new BatchSpanProcessor(otlpExporter));
-    console.log(`[Telemetry] Evaluation telemetry enabled → OTLP (${config.exporterEndpoint})`);
+    monitor = makeOtlp();
   }
 
   provider = new NodeTracerProvider({
@@ -126,6 +141,7 @@ export function initEvalTracerProvider(config: EvalTelemetryConfig): void {
   });
   provider.register();
 
+  monitoredExporter = monitor;
   telemetryEnabled = true;
 }
 
@@ -141,6 +157,17 @@ export function getEvalTracer(): Tracer {
  */
 export function isEvalTelemetryEnabled(): boolean {
   return telemetryEnabled;
+}
+
+/**
+ * Export-side health of the eval tracer: spans acknowledged by the backend,
+ * failed batches and the last error. `undefined` while telemetry is disabled.
+ * Reported on `GET /health` → `telemetry` so a report that carries a
+ * `traceId` but whose span never reached the trace store is explainable
+ * without reading the server log.
+ */
+export function getEvalExportStatus(): EvalExportStatus | undefined {
+  return monitoredExporter?.getStatus();
 }
 
 /**
@@ -164,6 +191,7 @@ export async function shutdownEvalTracer(): Promise<void> {
   if (provider) {
     await provider.shutdown();
     provider = null;
+    monitoredExporter = null;
     telemetryEnabled = false;
     console.log('[Telemetry] Evaluation telemetry shut down');
   }

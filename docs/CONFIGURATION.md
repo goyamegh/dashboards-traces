@@ -230,8 +230,14 @@ It runs ONE ad-hoc case and asserts, exiting non-zero on any failure:
 |-------|-----------------------|
 | `report.traceId` set | The eval `test_case` span is off — add/restore the `telemetry` block (or `OTEL_EVAL_ENABLED=true`) and restart; the server must log `[Telemetry] Evaluation telemetry enabled`. |
 | `report.runId` set (REST connectors) | The agent's response carried no `runId`/`id` and no `afterResponse` hook mapped the echoed field (session/conversation id) onto `runId`. Add the hook; recover existing reports with `npm run backfill:report-run-ids -- --run <evaluationRunId> --apply`. |
-| spans found via `/api/traces` (Strategy A or B) | The observability backend never received the run's spans — check the agent's OTLP exporter endpoint and the cluster's index pattern. |
-| `/api/metrics/batch` `hasSpans` | Spans exist but the metrics reader doesn't correlate them (SKIP when no observability cluster is configured). |
+| spans found via `/api/traces` (Strategy A or B) | The observability backend never received the run's spans — check the agent's OTLP exporter endpoint and the cluster's index pattern. Agent Health's own eval span must arrive even when the agent is down; if it doesn't, check 5 says why. |
+| `/api/metrics/batch` `hasSpans` | Spans exist but the metrics reader doesn't correlate them — `hasSpans` means the AGENT's spans; a run that matched only Agent Health's own eval span fails here with "only Agent Health's own eval span(s) matched" (SKIP when no observability cluster is configured). |
+| eval span export (server `/health` → `telemetry`) | The server's own exporter rejected or lost the batch: the detail carries the exporter's error (e.g. `HTTP 404 Not Found` — a base url with no `/v1/traces` path, wrong pipeline path, missing auth). SKIP on servers that predate the field. |
+
+When the report says the **agent step failed** (`failureStage: 'agent'` —
+connection refused, timeout, non-2xx), the runId and `hasSpans` checks report
+`WARN agent unreachable — no agent spans expected` instead of FAIL: nothing from
+the agent can be in the store. The eval-span checks (3 and 5) still have to PASS.
 
 Options: `--model-id` (judge model, default: first configured), `--prompt`,
 `--spans-wait-ms` (how long to wait for ingestion, default 60s),
@@ -243,6 +249,15 @@ For a fully self-contained check with no observability cluster, point the eval
 span exporter at the server's own OTLP receiver:
 `OTEL_EVAL_ENABLED=true OTEL_EVAL_EXPORTER_ENDPOINT=http://127.0.0.1:<port>/v1/traces`
 (spans land in the file trace store; the metrics check reports SKIP).
+
+**Exporter endpoint:** `telemetry.exporterEndpoint` / `OTEL_EVAL_EXPORTER_ENDPOINT`
+is the full OTLP/HTTP traces url (`…/v1/traces`). A base url with no path
+(the OTel-standard meaning of `OTEL_EXPORTER_OTLP_ENDPOINT`) is completed to
+`…/v1/traces` with a startup warning; a url that already carries a path is used
+verbatim. Export failures (404 from a wrong path, 403 from missing auth,
+ECONNREFUSED) are logged as `[Telemetry] Eval span export FAILED → <url>: …`
+(one line per minute) and counted on `GET /health` → `telemetry`
+(`exportedSpans`, `failedBatches`, `droppedSpans`, `lastError`).
 ### CloudWatch Observability (Optional)
 
 Read traces, logs and metrics from **Amazon CloudWatch** instead of an OpenSearch

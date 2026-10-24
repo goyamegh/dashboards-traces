@@ -25,6 +25,17 @@
  *   4. /api/metrics/batch hasSpans  — the metrics reader correlates the same
  *                                     run (SKIP when no observability cluster is
  *                                     configured: the metrics API needs one).
+ *   5. eval span export (server)    — GET /health → telemetry: the server's own
+ *                                     OTLP/OpenSearch exporter acknowledged the
+ *                                     span (FAIL with the exporter's error when a
+ *                                     batch was rejected during this run; SKIP on
+ *                                     servers that predate the field).
+ *
+ * Agent-down runs: when the report says the AGENT step failed
+ * (`failureStage: 'agent'` — ECONNREFUSED, timeout, non-2xx), checks 2 and 4
+ * are reported as WARN "agent unreachable" instead of FAIL — no agent spans or
+ * echoed id can exist. Check 3 still has to PASS (Agent Health's own eval span
+ * must reach the store regardless of the agent) and check 5 still has to PASS.
  *
  * Generic: the agent, model, evaluator and prompt are all arguments; nothing
  * here knows any particular agent.
@@ -64,6 +75,8 @@ export interface SmokeResult {
   traceId?: string;
   runId?: string;
   connectorProtocol?: string;
+  /** Set when the report says the agent step failed (`failureStage: 'agent'`). */
+  agentFailure?: string;
   spansFound: number;
   checks: Check[];
 }
@@ -185,7 +198,7 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
   const log = (...a: unknown[]) => { if (!o.json) console.log(...a); };
 
   // Preflight: server + agent + model.
-  await getJson(`${o.base}/health`);
+  const healthBefore = await getJson<any>(`${o.base}/health`);
   const agents = await getJson<{ agents: Array<{ key: string; connectorType?: string }> }>(`${o.base}/api/agents`);
   const agent = agents.agents.find((a) => a.key === o.agentKey);
   if (!agent) throw new Error(`Agent "${o.agentKey}" not found on ${o.base} (have: ${agents.agents.map((a) => a.key).join(', ')})`);
@@ -217,6 +230,11 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
   result.traceId = report.traceId ?? undefined;
   result.runId = report.runId ?? undefined;
   result.connectorProtocol = report.connectorProtocol ?? agent.connectorType;
+  // The agent step itself failed (connection refused / timeout / non-2xx):
+  // the report carries the cause; nothing from the agent can be in the store.
+  const agentFailure = report.failureStage === 'agent' ? String(report.error ?? report.agentError?.message ?? 'agent request failed') : undefined;
+  result.agentFailure = agentFailure;
+  if (agentFailure) log(`  agent step failed: ${agentFailure} — expecting Agent Health's eval span only`);
 
   // 1. traceId
   checks.push(result.traceId
@@ -227,7 +245,9 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
   if (result.connectorProtocol === 'rest') {
     checks.push(result.runId
       ? { name: 'report.runId set (REST agent echoed an id)', status: 'PASS', detail: result.runId }
-      : { name: 'report.runId set (REST agent echoed an id)', status: o.allowNoRunId ? 'WARN' : 'FAIL', detail: 'missing — the response carried no runId/id and no afterResponse hook mapped the echoed field onto runId' });
+      : agentFailure
+        ? { name: 'report.runId set (REST agent echoed an id)', status: 'WARN', detail: `agent unreachable — no response to echo an id from (${agentFailure})` }
+        : { name: 'report.runId set (REST agent echoed an id)', status: o.allowNoRunId ? 'WARN' : 'FAIL', detail: 'missing — the response carried no runId/id and no afterResponse hook mapped the echoed field onto runId' });
   } else {
     checks.push({ name: 'report.runId set (REST agent echoed an id)', status: 'SKIP', detail: `connector is ${result.connectorProtocol}; runId=${result.runId ?? 'none'}` });
   }
@@ -267,12 +287,40 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
       checks.push({ name: '/api/metrics/batch hasSpans', status: 'FAIL', detail: `HTTP ${r.status}` });
     } else {
       const m = r.body.metrics[0];
+      // `hasSpans` means the AGENT's spans: a run that matched only Agent
+      // Health's own eval span reports hasSpans=false + evalOnlySpans>0.
+      const evalOnly = Number(m.evalOnlySpans ?? 0);
       checks.push(m.hasSpans
         ? { name: '/api/metrics/batch hasSpans', status: 'PASS', detail: `tokens=${m.totalTokens} llmCalls=${m.llmCalls} cost=$${Number(m.costUsd ?? 0).toFixed(4)}` }
-        : { name: '/api/metrics/batch hasSpans', status: 'FAIL', detail: m.error ?? 'hasSpans=false' });
+        : agentFailure
+          ? { name: '/api/metrics/batch hasSpans', status: 'WARN', detail: `agent unreachable — no agent spans expected (${evalOnly > 0 ? `${evalOnly} eval span(s) matched` : 'no spans matched'})` }
+          : { name: '/api/metrics/batch hasSpans', status: 'FAIL', detail: m.error ?? (evalOnly > 0 ? `hasSpans=false — only Agent Health's own ${evalOnly} eval span(s) matched; the agent emitted no spans into this trace store` : 'hasSpans=false') });
     }
   } else {
     checks.push({ name: '/api/metrics/batch hasSpans', status: 'FAIL', detail: 'nothing to correlate on' });
+  }
+
+  // 5. server-side export health: did the server's exporter deliver the span?
+  // Older servers have no `telemetry` block on /health → SKIP.
+  const after = await getJson<any>(`${o.base}/health`).catch(() => undefined);
+  const telemetry = after?.telemetry;
+  if (!telemetry || typeof telemetry !== 'object' || !('enabled' in telemetry)) {
+    checks.push({ name: 'eval span export (server /health telemetry)', status: 'SKIP', detail: 'server does not report exporter status' });
+  } else if (!telemetry.enabled) {
+    checks.push({ name: 'eval span export (server /health telemetry)', status: 'FAIL', detail: 'telemetry disabled on the server' });
+  } else {
+    const failedBefore = Number(healthBefore?.telemetry?.failedBatches ?? 0);
+    const failedNow = Number(telemetry.failedBatches ?? 0);
+    const exportedBefore = Number(healthBefore?.telemetry?.exportedSpans ?? 0);
+    const exportedNow = Number(telemetry.exportedSpans ?? 0);
+    const where = telemetry.endpoint ? ` → ${telemetry.endpoint}` : '';
+    if (failedNow > failedBefore) {
+      checks.push({ name: 'eval span export (server /health telemetry)', status: 'FAIL', detail: `${failedNow - failedBefore} export batch(es) failed during this run${where}: ${telemetry.lastError?.message ?? 'unknown error'} (${telemetry.droppedSpans} span(s) dropped since start)` });
+    } else if (exportedNow > exportedBefore) {
+      checks.push({ name: 'eval span export (server /health telemetry)', status: 'PASS', detail: `${exportedNow - exportedBefore} span(s) acknowledged${where}` });
+    } else {
+      checks.push({ name: 'eval span export (server /health telemetry)', status: result.spansFound > 0 ? 'WARN' : 'FAIL', detail: `no export acknowledged yet (exportedSpans=${exportedNow}, failedBatches=${failedNow})${where}` });
+    }
   }
 
   // Cleanup the ad-hoc report (its id is the only thing we created).
