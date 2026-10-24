@@ -285,3 +285,153 @@ test.describe('Evaluations pages never fetch the full test-case corpus (#591)', 
     expect(recorded.all, `test-case list fetches issued by /evaluations/benchmarks while toggling sample data:\n${recorded.all.join('\n')}`).toEqual([]);
   });
 });
+
+/**
+ * The benchmark DETAIL page (`/evaluations/benchmarks/:id`, Cases tab) is the
+ * second place #591 bit: it resolved the benchmark's cases with
+ * `GET /api/storage/test-cases?ids=<all>` in FULL — 6.7 MB on a real 62-case
+ * code-imported benchmark — for a list that shows names and a one-line
+ * prompt. It must ask for `fields=summary` and fetch only the SELECTED case
+ * in full (by id) for the definition pane, keyed by id (two cases share a
+ * name) and immune to out-of-order responses when the selection moves fast.
+ *
+ * Real-shaped fixture: 62 cases × ~100 KB `sourceCode`, two with identical
+ * names, all seeded through the real API and deleted by id. The per-case
+ * fetch is HELD so the loading state and the late-response race are real.
+ */
+test.describe('Benchmark detail page fetches case summaries + the selected case in full (#591)', () => {
+  const DETAIL_CASE_COUNT = 62;
+  const DETAIL_SOURCE_BYTES = 100_000;
+  const BULK_BATCH = 10;
+  /** How long each per-case GET /:id is held — long enough to observe loading and to let selections race. */
+  const PANE_HOLD_MS = 1_500;
+  const CASE_BY_ID_RE = /\/api\/storage\/test-cases\/[^/?#]+(\?[^#]*)?$/;
+
+  let benchmarkId: string;
+  let ids: string[];
+  let dupName: string;
+
+  const outcomeOf = (i: number) => `Identifies synthetic component ${i} of ${DETAIL_CASE_COUNT}`;
+
+  test.beforeEach(async ({ request, testData }) => {
+    // Names sort the two same-named cases and the third target to the TOP of
+    // the (name-sorted, 60-per-page) list so they are clickable without scrolling.
+    dupName = uniqueTestName('detail-aaa-dup');
+    const names = Array.from({ length: DETAIL_CASE_COUNT }, (_, i) =>
+      i < 2 ? dupName : uniqueTestName(`detail-${i === 2 ? 'aab-third' : `case-${String(i).padStart(2, '0')}`}`));
+
+    ids = [];
+    for (let start = 0; start < DETAIL_CASE_COUNT; start += BULK_BATCH) {
+      const batch = Array.from({ length: Math.min(BULK_BATCH, DETAIL_CASE_COUNT - start) }, (_, k) => {
+        const i = start + k;
+        const line = `test('detail-${i}', { prompt: 'synthetic prompt' }, async ({ result, expect }) => { expect(result.status).toBe('ok'); });\n`;
+        return {
+          name: names[i],
+          description: `synthetic code-imported case ${i}`,
+          category: 'RCA',
+          difficulty: 'Medium',
+          labels: ['category:RCA', 'difficulty:Medium'],
+          initialPrompt: `Investigate synthetic incident ${i}. `.repeat(12),
+          context: [{ description: 'runbook', value: `https://runbooks.example.invalid/${i}` }],
+          expectedOutcomes: [outcomeOf(i)],
+          sourceFileName: `detail-${i}.eval.js`,
+          sourceLanguage: 'javascript',
+          sourceHash: `detail-${i}`,
+          sourceCode: line.repeat(Math.ceil(DETAIL_SOURCE_BYTES / line.length)).slice(0, DETAIL_SOURCE_BYTES),
+        };
+      });
+      const bulk = await request.post('/api/storage/test-cases/bulk', { data: { testCases: batch } });
+      const body = await bulk.json();
+      const created: string[] = (body?.testCases ?? []).map((tc: any) => tc?.id).filter(Boolean);
+      testData.testCases(created);
+      expect(bulk.ok(), `bulk seed status ${bulk.status()}`).toBeTruthy();
+      expect(created).toHaveLength(batch.length);
+      ids.push(...created);
+    }
+
+    const bm = await request.post('/api/storage/benchmarks', {
+      data: {
+        name: uniqueTestName('detail-summary-bm'),
+        description: 'seed for the #591 detail-page regression',
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: ids }],
+        testCaseIds: ids,
+        runs: [],
+      },
+    });
+    const bmBody = await bm.json();
+    benchmarkId = bmBody?.id || bmBody?.benchmark?.id;
+    testData.benchmark(benchmarkId);
+    expect(bm.ok(), `benchmark seed status ${bm.status()}`).toBeTruthy();
+  });
+
+  test('lists 62 cases from one summary fetch, then shows the selected case\'s full definition — right case under a duplicate name, no stale pane after fast selection changes', async ({ page }) => {
+    const recorded = await recordTestCaseListRequests(page);
+    const perCaseFetches: string[] = [];
+    await page.route(CASE_BY_ID_RE, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      perCaseFetches.push(decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop() || ''));
+      await new Promise(r => setTimeout(r, PANE_HOLD_MS));
+      return route.continue().catch(() => {});
+    });
+
+    const t0 = Date.now();
+    await page.goto(`/evaluations/benchmarks/${encodeURIComponent(benchmarkId)}`);
+    const rows = page.locator('[data-testid="benchmark-cases-tab"] [role="option"]');
+    // The list renders from the summary fetch — without waiting on any (held) full download.
+    await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+    expect(Date.now() - t0).toBeLessThan(FULL_FETCH_HOLD_MS);
+    await expect(rows).toHaveCount(Math.min(DETAIL_CASE_COUNT, 60), { timeout: RENDER_DEADLINE_MS });
+
+    // One list request, summary-projected, scoped to this benchmark's ids.
+    expect(recorded.full, `full test-case fetches issued by the detail page:\n${recorded.full.join('\n')}`).toEqual([]);
+    expect(recorded.all.length).toBeGreaterThan(0);
+    for (const url of recorded.all) {
+      const params = new URL(url).searchParams;
+      expect(params.get('fields')).toBe('summary');
+      expect(params.get('ids')).toBeTruthy();
+    }
+    // Nothing is fetched in full until a case is selected.
+    expect(perCaseFetches).toEqual([]);
+
+    const [dupA, dupB, third] = ids;
+    const rowFor = (id: string) => page.locator(`[data-testid="benchmark-cases-tab"] [role="option"][data-case-id="${id}"]`);
+    await expect(rowFor(dupA)).toContainText(dupName);
+    await expect(rowFor(dupB)).toContainText(dupName);
+
+    // Select A, B, C in quick succession while every per-case response is held.
+    await rowFor(dupA).click();
+    await rowFor(dupB).click();
+    await rowFor(third).click();
+
+    const pane = page.locator('[data-testid="case-definition"]');
+    await expect(pane).toHaveAttribute('data-case-id', third);
+    // The pane shows a loading row — never the truncated summary — while the full document is in flight.
+    await expect(page.getByTestId('case-definition-loading')).toBeVisible();
+    await expect(pane).toHaveAttribute('data-status', 'loading');
+
+    // Only the SELECTED cases were fetched in full, nothing else.
+    await expect.poll(() => perCaseFetches.length).toBeGreaterThanOrEqual(1);
+    for (const id of perCaseFetches) expect([dupA, dupB, third]).toContain(id);
+
+    // When the responses land (A's and B's arrive stale), the pane shows C and only C.
+    await expect(pane).toContainText(outcomeOf(2), { timeout: PANE_HOLD_MS * 3 + RENDER_DEADLINE_MS });
+    await expect(pane).toHaveAttribute('data-status', 'ready');
+    await expect(pane).toContainText('Investigate synthetic incident 2. Investigate synthetic incident 2.'); // full prompt, past the 200-char summary cut
+    await expect(pane).not.toContainText(outcomeOf(0));
+    await expect(pane).not.toContainText(outcomeOf(1));
+
+    // Back to the SECOND same-named case: its own outcomes, under the shared name.
+    await rowFor(dupB).click();
+    await expect(pane).toHaveAttribute('data-case-id', dupB);
+    await expect(pane).toContainText(outcomeOf(1), { timeout: PANE_HOLD_MS * 2 + RENDER_DEADLINE_MS });
+    await expect(pane).not.toContainText(outcomeOf(0));
+    await expect(pane).not.toContainText(outcomeOf(2));
+    await expect(page.locator('[data-testid="case-detail-pane"] h3')).toHaveText(dupName);
+
+    // Still no full list download anywhere along the way.
+    expect(recorded.full).toEqual([]);
+    const fullFetchesIssued = perCaseFetches.length;
+    expect(fullFetchesIssued).toBeLessThanOrEqual(3);
+  });
+});
