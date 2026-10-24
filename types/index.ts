@@ -1288,6 +1288,14 @@ export interface TraceMetrics {
    * ids found none of the agent's spans, so a key is one or the other.
    */
   correlatedBy?: 'ids' | 'window';
+  /**
+   * Set when the query DID match spans but every one of them was Agent
+   * Health's own eval/judge span (`test_case`, judge `chat`): the agent itself
+   * emitted nothing this trace store can see — untraced, or exporting to a
+   * different store. `hasSpans` is `false` and every counter is 0 in that
+   * case; consumers render "no traces" and can say why.
+   */
+  evalOnlySpans?: number;
 }
 
 // ============ Trace Types ============
@@ -2285,6 +2293,8 @@ export interface MetricsResult {
   partial?: boolean;
   /** See TraceMetrics.correlatedBy. */
   correlatedBy?: 'ids' | 'window';
+  /** See TraceMetrics.evalOnlySpans -- only our own eval/judge spans matched; `hasSpans` is false. */
+  evalOnlySpans?: number;
   /**
    * Set (with `status: 'error'`) when the trace-store query for this key
    * FAILED — timeout, 5xx, rejected query. The key's spans are then UNKNOWN,
