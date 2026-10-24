@@ -27,8 +27,14 @@
  *      don't report readiness) get an automatic, final estimate instead
  *      (`settledMs`): first paint + every `/api/*` request settled, then 1 s
  *      of quiet — i.e. "route change → last data fetch settled". The HUD
- *      shows `readyMs ?? settledMs`. Instrumented routes never auto-settle
- *      (a >1 s pause between their request bursts must not cut them short).
+ *      shows `readyMs ?? settledMs`. Instrumented routes don't auto-settle
+ *      (a >1 s pause between their request bursts must not cut them short)
+ *      -- EXCEPT for an in-page navigation that keeps the same route key
+ *      (the benchmark page's Cases → Runs tab, a query-string change): the
+ *      page component stays mounted, doesn't reload, and so never reports
+ *      ready again, which left the pill on `…` for good. Those records get
+ *      the estimate too; an explicit `markPageReady` still wins if the page
+ *      does reload (e.g. the inspector switching to another run).
  *   3. While a navigation is active, `window.fetch` calls to `/api/*` that
  *      START before the record is final (`readyMs` / `settledMs` stamped) are
  *      recorded (method, path template with ids collapsed to `:id`,
@@ -453,6 +459,10 @@ export function startNavigation(pathname: string): void {
   wrapFetch();
   clearMetrics();
   const route = routeKeyFromPath(pathname);
+  // Same route key as the record being replaced = in-page navigation (tab
+  // switch, query change): the page stays mounted and won't report ready
+  // again, so this record must be allowed to auto-settle.
+  const inPageNavigation = current !== null && current.route === route;
   currentStartPerf = performance.now();
   current = {
     route,
@@ -470,7 +480,7 @@ export function startNavigation(pathname: string): void {
     inFlight: 0,
     firstRequestStartPerf: null,
     lastResponseEndPerf: null,
-    reportsReady: isInstrumentedRoute(route),
+    reportsReady: isInstrumentedRoute(route) && !inPageNavigation,
   };
   bookkeeping.set(record, bk);
   if (typeof requestAnimationFrame === 'function') {

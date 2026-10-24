@@ -310,7 +310,13 @@ test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () =>
     await page.getByRole('tab', { name: /^Runs/ }).click();
     await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 15_000 });
     expect((await page.getByTestId('run-name-link').allInnerTexts()).map(t => t.trim())).toEqual([SAME_NAME, SAME_NAME, SAME_NAME]);
-    await expect(pill).toContainText('benchmark-runs'); // same page, same route key
+    // The tab switch is a navigate() that keeps the route key and does NOT
+    // reload the page, so the page never reports ready again: the pill must
+    // still settle on a number (estimate), never sit on "…".
+    await expect(pill).toHaveText(PILL('benchmark-runs'), { timeout: 15_000 });
+    await page.getByTestId('debug-latency-hud').click();
+    await expect(page.getByTestId('debug-latency-hud-ready')).toContainText('~');
+    await page.getByTestId('debug-latency-hud').click();
 
     // 3. Run inspector (client-side, via the first of three identically named runs).
     await page.getByTestId('run-name-link').first().click();

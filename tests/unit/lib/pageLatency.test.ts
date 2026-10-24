@@ -378,6 +378,53 @@ describe('lib/pageLatency', () => {
       expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
     });
 
+    it('an in-page navigation on an instrumented route (benchmark Cases → Runs tab keeps the route key) DOES auto-settle, so the pill never sticks on "…"', async () => {
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-1'); // Cases tab
+      jest.advanceTimersByTime(50);
+      await fetch('/api/storage/benchmarks/bench-1');
+      pageLatency.markPageReady('benchmark-runs');
+      expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
+
+      // The Runs tab is a navigate() to /runs: same route key, page stays
+      // mounted, loadBenchmark does NOT run again → no second markPageReady.
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs');
+      const rec = pageLatency.getCurrentRecord()!;
+      expect(rec.route).toBe('benchmark-runs');
+      expect(rec.readyMs).toBeNull();
+      jest.advanceTimersByTime(50); // first paint (the settle timer is armed from here: no requests)
+      expect(rec.renderMs).not.toBeNull();
+      expect(rec.settledMs).toBeNull();
+      jest.advanceTimersByTime(1100);
+      expect(rec.settledMs).toBe(rec.renderMs); // estimate: paint + 1 s quiet, no requests
+
+      // …but a fresh navigation to a DIFFERENT page with that key is still the page's to report.
+      pageLatency.startNavigation('/evaluations/runs');
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-2/runs');
+      jest.advanceTimersByTime(50);
+      await fetch('/api/storage/benchmarks/bench-2');
+      jest.advanceTimersByTime(5000);
+      expect(pageLatency.getCurrentRecord()!.settledMs).toBeNull();
+    });
+
+    it('an in-page navigation that DOES reload (inspector → another run, same route key) still reports the explicit number, which wins over the estimate', async () => {
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs/run-1/inspect');
+      jest.advanceTimersByTime(50);
+      await fetch('/api/storage/benchmarks/bench-1');
+      pageLatency.markPageReady('run-inspector');
+
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs/run-2/inspect');
+      const rec = pageLatency.getCurrentRecord()!;
+      jest.advanceTimersByTime(50);
+      await fetch('/api/storage/runs/report-2');
+      jest.advanceTimersByTime(1000); // estimate lands first
+      expect(rec.settledMs).not.toBeNull();
+      jest.advanceTimersByTime(400);
+      pageLatency.markPageReady('run-inspector'); // the page's own report
+      expect(rec.readyMs).toBeGreaterThan(rec.settledMs!);
+    });
+
     it('once auto-settled, the estimate is final: a later background request is not counted and does not move the number', async () => {
       window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
       pageLatency.startNavigation('/settings');
