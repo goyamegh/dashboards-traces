@@ -21,7 +21,37 @@
  * writes, so it's already correct at the very first render.
  */
 
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures/test-fixtures';
+import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
+
+const PILL = (route: string) => new RegExp(`^● ${route} · \\d+(\\.\\d)? (ms|s)$`);
+
+function parseMs(s: string): number {
+  const m = /(\d+(?:\.\d+)?) (ms|s)/.exec(s);
+  if (!m) throw new Error(`no duration in ${JSON.stringify(s)}`);
+  return m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1]);
+}
+
+/**
+ * Sidebar click that also works once the nav is pinned to the icon rail (the
+ * run inspector collapses it): hover the rail first so the flyout has finished
+ * sliding open before the link is clicked.
+ */
+async function clickNav(page: Page, testId: string): Promise<void> {
+  await page.getByTestId('sidebar-hover-zone').hover();
+  await page.waitForTimeout(600);
+  await page.getByTestId(testId).click();
+}
+
+/** The Settings page's Debug Mode switch (the ONLY user-facing way to turn the HUD on). */
+async function flipDebugModeInSettings(page: Page, on: boolean): Promise<void> {
+  const sw = page.locator('#debug-mode');
+  await expect(sw).toBeVisible({ timeout: 15_000 });
+  await expect(sw).toHaveAttribute('aria-checked', on ? 'false' : 'true');
+  await sw.click();
+  await expect(sw).toHaveAttribute('aria-checked', on ? 'true' : 'false');
+}
 
 test.describe('Debug latency HUD', () => {
   test.describe.configure({ mode: 'serial' });
@@ -79,11 +109,6 @@ test.describe('Debug latency HUD', () => {
     const panel = page.getByTestId('debug-latency-hud-panel');
     await expect(panel).toBeVisible();
 
-    const parseMs = (s: string): number => {
-      const m = /(\d+(?:\.\d+)?) (ms|s)/.exec(s);
-      if (!m) throw new Error(`no duration in ${JSON.stringify(s)}`);
-      return m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1]);
-    };
     const readyText = await page.getByTestId('debug-latency-hud-ready').innerText();
     const paintText = await page.getByTestId('debug-latency-hud-paint').innerText();
     const apiText = await page.getByTestId('debug-latency-hud-api').innerText();
@@ -166,5 +191,166 @@ test.describe('Debug latency HUD', () => {
     // navigation window, so the HUD disappears without a full page reload.
     await page.getByTestId('nav-evals3-runs').click();
     await expect(page.getByTestId('debug-latency-hud')).toHaveCount(0);
+  });
+});
+
+/**
+ * Owner report (2026-10-24): "why is the performance monitor not showing any
+ * metrics after I turn it on?" -- the old overlay only ever listed
+ * `lib/performance` step timings, which only two trace views recorded, so on
+ * Benchmarks / Runs / Inspector it stayed empty. These tests drive the REAL
+ * user path (the Settings page's Debug Mode switch, not an API shortcut) and
+ * real-shaped data: a benchmark whose three runs share one name, a held
+ * (slow) second-step request, and 5+ pages navigated client-side, asserting
+ * the pill shows the right page and a real number on every one of them.
+ */
+test.describe('Debug latency HUD — Settings toggle + real-shaped pages', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  const tracker = createTestDataTracker();
+  const SAME_NAME = uniqueTestName('hud-same-name');
+  let benchmarkId: string | null = null;
+  let runIds: string[] = [];
+
+  test.beforeAll(async ({ request }) => {
+    const tcIds: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await request.post('/api/storage/test-cases', {
+        data: { name: uniqueTestName(`hud-tc-${i}`), category: 'Test', difficulty: 'Easy', initialPrompt: 'p', expectedOutcomes: ['o'] },
+      });
+      if (!r.ok()) return;
+      const j = await r.json();
+      const tcId = j.id || j.testCase?.id;
+      tracker.testCase(tcId);
+      tcIds.push(tcId);
+    }
+    const bmRes = await request.post('/api/storage/benchmarks', {
+      data: {
+        name: uniqueTestName('hud-benchmark'),
+        description: 'latency HUD E2E',
+        testCaseIds: tcIds, runs: [], currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: tcIds }],
+      },
+    });
+    if (!bmRes.ok()) return;
+    const id = (await bmRes.json()).id as string;
+    tracker.benchmark(id);
+    const bm = await (await request.get(`/api/storage/benchmarks/${id}`)).json();
+    const snaps = tcIds.map(tc => ({ id: tc, version: 1, name: tc }));
+    const now = Date.now();
+    // Three runs with IDENTICAL names (real data has these: re-runs of the same config).
+    runIds = [0, 1, 2].map(i => `run-hud-${now}-${i}`);
+    const runs = runIds.map((rid, i) => ({
+      id: rid, name: SAME_NAME, agentKey: 'demo', modelId: 'demo-model',
+      createdAt: new Date(now - (i + 1) * 86_400_000).toISOString(), status: 'completed', benchmarkVersion: 1,
+      testCaseSnapshots: snaps,
+      results: Object.fromEntries(tcIds.map(tc => [tc, { reportId: `report-hud-${rid}-${tc}`, status: 'completed', passFailStatus: 'passed' }])),
+    }));
+    const put = await request.put(`/api/storage/benchmarks/${id}`, {
+      data: { name: bm.name, description: bm.description, testCaseIds: bm.testCaseIds, runs },
+    });
+    if (!put.ok()) return;
+    benchmarkId = id;
+  });
+
+  test.afterEach(async ({ request }) => {
+    await request.post('/api/debug', { data: { enabled: false } });
+  });
+
+  test.afterAll(async () => {
+    await tracker.cleanup();
+  });
+
+  test('turning on the Settings "Debug Mode" switch shows the HUD at once, and every page visited afterwards gets a real number', async ({ page, request }) => {
+    test.skip(!benchmarkId, 'Could not seed the benchmark (storage not configured?)');
+
+    await request.post('/api/debug', { data: { enabled: false } });
+    await page.goto('/settings');
+    await expect(page.getByTestId('debug-latency-hud')).toHaveCount(0);
+
+    // Hold the Runs tab's benchmark fetch: a slow second-step load is the
+    // shape the owner actually hits, and it must show up in the number.
+    const HOLD_MS = 1500;
+    await page.route(`**/api/storage/benchmarks/${benchmarkId}?*`, async route => {
+      await new Promise(r => setTimeout(r, HOLD_MS));
+      await route.continue();
+    });
+
+    await flipDebugModeInSettings(page, true);
+    // Visible within the 1 s activation poll, before any navigation: tells
+    // the user what to do instead of sitting there empty.
+    const pill = page.getByTestId('debug-latency-hud-pill');
+    await expect(pill).toBeVisible({ timeout: 5_000 });
+    await expect(pill).toHaveText(/navigate to start measuring/);
+    // The Settings blurb describes THIS HUD, not the removed overlay.
+    await expect(page.getByText(/Latency HUD:/)).toBeVisible();
+    await expect(page.getByText(/Performance Monitoring:|metrics overlay/)).toHaveCount(0);
+
+    // 1. Benchmarks list.
+    await page.getByTestId('nav-evals3-benchmarks').click();
+    await expect(pill).toHaveText(PILL('benchmarks'), { timeout: 15_000 });
+    await expect(page.getByTestId('debug-latency-hud-dot')).toHaveAttribute('data-band', /fast|ok|slow/);
+
+    // 2. Benchmark Runs tab (held request): number ≥ the hold, dot not green, request listed.
+    await page.locator('tr', { hasText: 'hud-benchmark' }).first().click();
+    await expect(pill).toHaveText(PILL('benchmark-runs'), { timeout: 20_000 });
+    const runsReady = parseMs((await pill.innerText()));
+    expect(runsReady).toBeGreaterThanOrEqual(HOLD_MS);
+    await expect(page.getByTestId('debug-latency-hud-dot')).toHaveAttribute('data-band', /ok|slow/);
+    await page.getByTestId('debug-latency-hud').click(); // pin
+    const held = page.getByTestId('debug-latency-hud-request').filter({ hasText: '/api/storage/benchmarks/:id' });
+    await expect(held.first()).toBeVisible();
+    expect(parseMs(await held.first().innerText())).toBeGreaterThanOrEqual(HOLD_MS);
+    const panelText = await page.getByTestId('debug-latency-hud-panel').innerText();
+    expect(panelText).not.toContain(benchmarkId!); // ids collapsed to :id
+    expect(panelText).not.toMatch(/benchmarks · /); // nothing about the previous page
+    await page.getByTestId('debug-latency-hud').click(); // un-pin
+
+    // Runs tab: three rows, one name -- the HUD must not depend on names being unique.
+    await page.getByRole('tab', { name: /^Runs/ }).click();
+    await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 15_000 });
+    expect((await page.getByTestId('run-name-link').allInnerTexts()).map(t => t.trim())).toEqual([SAME_NAME, SAME_NAME, SAME_NAME]);
+    await expect(pill).toContainText('benchmark-runs'); // same page, same route key
+
+    // 3. Run inspector (client-side, via the first of three identically named runs).
+    await page.getByTestId('run-name-link').first().click();
+    await expect(page).toHaveURL(new RegExp(`/runs/${runIds[0]}/inspect`));
+    await expect(pill).toHaveText(PILL('run-inspector'), { timeout: 20_000 });
+
+    // 4. Evaluation Runs list (the inspector collapses the sidebar to an icon
+    //    rail with a hover flyout, so use its breadcrumb link instead).
+    await page.getByRole('link', { name: 'Evaluations', exact: true }).first().click();
+    await expect(page).toHaveURL(/\/evaluations\/runs$/);
+    await expect(pill).toHaveText(PILL('eval-runs'), { timeout: 20_000 });
+
+    // 5. Agent Traces (no observability backend on this server → the page still reports ready).
+    await clickNav(page, 'nav-agent-traces');
+    await expect(pill).toHaveText(PILL('traces'), { timeout: 20_000 });
+
+    // 6. A page that does NOT instrument itself still gets an estimate (~), not an empty HUD.
+    await clickNav(page, 'nav-overview');
+    await expect(pill).toHaveText(PILL('/'), { timeout: 20_000 });
+    await page.getByTestId('debug-latency-hud').click();
+    await expect(page.getByTestId('debug-latency-hud-ready')).toContainText('~');
+    await page.getByTestId('debug-latency-hud').click();
+
+    // Off again from Settings: gone within the poll, no navigation needed.
+    await clickNav(page, 'nav-settings');
+    await flipDebugModeInSettings(page, false);
+    await expect(page.getByTestId('debug-latency-hud')).toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test('Compare page reports ready too (comparison route) and a reload keeps the HUD on', async ({ page, request }) => {
+    test.skip(!benchmarkId, 'Could not seed the benchmark (storage not configured?)');
+    await request.post('/api/debug', { data: { enabled: true } });
+    await page.addInitScript(() => {
+      window.localStorage.setItem('agenteval_debug', 'true');
+    });
+    await page.goto(`/compare/${benchmarkId}?runs=${runIds[0]},${runIds[1]}`);
+    const pill = page.getByTestId('debug-latency-hud-pill');
+    await expect(pill).toHaveText(PILL('comparison'), { timeout: 30_000 });
+    // Full reload (fresh module state) on an instrumented page: measured again, not stuck on "…".
+    await page.reload();
+    await expect(pill).toHaveText(PILL('comparison'), { timeout: 30_000 });
   });
 });

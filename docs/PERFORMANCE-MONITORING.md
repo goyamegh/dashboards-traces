@@ -16,7 +16,7 @@ Operation timings are recorded and shown in the **debug latency HUD**
 (`components/DebugLatencyHud.tsx`, data in `lib/pageLatency.ts` +
 `lib/performance.ts`), which is active when any of these is true:
 
-- Debug mode is on (Settings → "Verbose Logging", or `POST /api/debug`)
+- Debug mode is on (Settings → "Debug Mode" switch, or `POST /api/debug`)
 - This is a local dev build (`npm run dev`, `import.meta.env.DEV`)
 - The legacy flag is set from the browser console:
 

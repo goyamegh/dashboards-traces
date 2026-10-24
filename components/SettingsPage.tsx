@@ -872,8 +872,8 @@ export const SettingsPage: React.FC = () => {
                 Debug Mode
               </Label>
               <p className="text-xs text-muted-foreground">
-                Enable verbose logging (console.debug) AND real-time performance metrics overlay.
-                Useful for debugging evaluation flow, SSE events, and performance issues.
+                Enable verbose logging (console.debug) AND the per-page latency HUD (bottom-right pill on every page).
+                Useful for debugging evaluation flow, SSE events, and slow pages.
               </p>
             </div>
             <Switch
