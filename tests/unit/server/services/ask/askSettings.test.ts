@@ -20,17 +20,26 @@ describe('resolveAskSettings', () => {
       model: undefined,
       sessionsDir: resolve(cwd, '.agent-health/ask-sessions'),
       maxConcurrent: ASK_DEFAULT_MAX_CONCURRENT,
+      toolTimeoutMs: 30_000,
+      turnTimeoutMs: 240_000,
+      maxToolCalls: 30,
     });
   });
 
   it('reads the config block; relative sessionsDir resolves against the cwd, absolute stays', () => {
-    expect(resolveAskSettings({ assistant: { enabled: false, model: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6', sessionsDir: 'var/ask', maxConcurrent: 2 } }, {}, cwd)).toEqual({
+    expect(resolveAskSettings({ assistant: { enabled: false, model: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6', sessionsDir: 'var/ask', maxConcurrent: 2, toolTimeoutMs: 5000, turnTimeoutMs: 60_000, maxToolCalls: 5 } }, {}, cwd)).toEqual({
       enabled: false,
       model: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
       sessionsDir: resolve(cwd, 'var/ask'),
       maxConcurrent: 2,
+      toolTimeoutMs: 5000,
+      turnTimeoutMs: 60_000,
+      maxToolCalls: 5,
     });
     expect(resolveAskSettings({ assistant: { sessionsDir: '/data/ask' } }, {}, cwd).sessionsDir).toBe('/data/ask');
+    // budget env overrides win; nonsense values fall back to the defaults
+    const budgets = resolveAskSettings({ assistant: { toolTimeoutMs: 5000 } }, { AH_ASK_TOOL_TIMEOUT_MS: '700', AH_ASK_TURN_TIMEOUT_MS: 'soon', AH_ASK_MAX_TOOL_CALLS: '-3' }, cwd);
+    expect([budgets.toolTimeoutMs, budgets.turnTimeoutMs, budgets.maxToolCalls]).toEqual([700, 240_000, 30]);
   });
 
   it('env overrides win over the config block', () => {

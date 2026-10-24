@@ -43,16 +43,23 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     };
     sessionCreate = jest.fn(() => fakeSm);
     sessionOpen = jest.fn(() => ({ ...fakeSm, getSessionId: () => 'ask-from-disk', getEntries: () => [{ type: 'custom', customType: 'agent-health.ask', data: { page: { route: '/runs/report-1' }, selections: [], createdAt: 'x' } }, { type: 'custom', customType: 'agent-health.ask.turn', data: { id: 't0', question: 'earlier', answer: 'said', selections: [], startedAt: 'x', toolCalls: [] } }] }));
-    createAgentSession = jest.fn(async () => ({
-      session: {
-        prompt: jest.fn(async (p: string) => {
-          prompted.push(p);
-          if (promptGate) await new Promise<void>((r) => { promptGate = r; });
-        }),
-        subscribe: jest.fn((l: any) => { l({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'the ' } }); l({ type: 'tool_execution_start', toolName: 'get_report' }); l({ type: 'tool_execution_end', toolName: 'get_report' }); return () => {}; }),
-        messages: [{ role: 'assistant', content: [{ type: 'text', text: 'the answer' }] }],
-      },
-    }));
+    // Real-shaped pi session: `prompt()` APPENDS the user message and the turn's assistant
+    // message(s) to `messages` (pi persists them as it goes); earlier turns stay in the array.
+    createAgentSession = jest.fn(async () => {
+      const messages: any[] = [];
+      return {
+        session: {
+          messages,
+          prompt: jest.fn(async (p: string) => {
+            prompted.push(p);
+            messages.push({ role: 'user', content: [{ type: 'text', text: p }] });
+            if (promptGate) await new Promise<void>((r) => { promptGate = r; });
+            messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'the answer' }] });
+          }),
+          subscribe: jest.fn((l: any) => { l({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'the ' } }); l({ type: 'tool_execution_start', toolName: 'get_report' }); l({ type: 'tool_execution_end', toolName: 'get_report' }); return () => {}; }),
+        },
+      };
+    });
     getById = jest.fn(async (id: string) => (id === 'report-1' ? { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'failed', trajectory: [] } : null));
     jest.doMock(
       '@earendil-works/pi-coding-agent',
@@ -76,7 +83,9 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     }));
   });
 
+  const realFetch = global.fetch;
   afterEach(() => {
+    (global as any).fetch = realFetch; // some tests stub fetch; the real-HTTP tests below need the real one
     jest.dontMock('@earendil-works/pi-coding-agent');
     jest.dontMock('@/lib/debug');
     jest.dontMock('@/server/adapters/index');
@@ -398,28 +407,276 @@ describe('askService — pi SDK wiring (read-only by construction)', () => {
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 
-  it('model selection: a provider-qualified or bare modelId pins the model, an unknown pin falls back to the newest Claude, and an empty registry is an error', async () => {
+  it('model selection: the config pin is honoured exactly — provider-qualified pins match that provider only, an unavailable pin is an error (never a silent fallback), the request cannot override it', async () => {
     process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
     const sdk = require('@earendil-works/pi-coding-agent');
-    const other = { provider: 'anthropic', id: 'claude-opus-4-1' };
-    sdk.ModelRuntime.create = jest.fn(async () => ({ getAvailable: jest.fn(async () => [other, mockModel]) }));
-    const { prepareAsk, resetAskServiceState } = require('@/server/services/ask/askService');
+    // The SAME model id under two providers: the pin decides where the data goes.
+    const viaAnthropic = { provider: 'anthropic', id: 'claude-opus-4-1' };
+    const viaBedrock = { provider: 'amazon-bedrock', id: 'claude-opus-4-1' };
+    sdk.ModelRuntime.create = jest.fn(async () => ({ getAvailable: jest.fn(async () => [viaAnthropic, viaBedrock, mockModel]) }));
+    const { prepareAsk, resetAskServiceState, resolvePinnedModel } = require('@/server/services/ask/askService');
+
+    mockConfig.mockReturnValue({ assistant: { model: 'amazon-bedrock/claude-opus-4-1' } });
     resetAskServiceState();
-    expect((await prepareAsk({ pageContext: { route: '/' }, modelId: 'anthropic/claude-opus-4-1' })).model).toBe('anthropic/claude-opus-4-1');
-    expect((await prepareAsk({ pageContext: { route: '/' }, modelId: 'claude-opus-4-1' })).model).toBe('anthropic/claude-opus-4-1');
-    expect((await prepareAsk({ pageContext: { route: '/' }, modelId: 'does-not-exist' })).model).toBe(`${mockModel.provider}/${mockModel.id}`);
-    // the config pin is honoured when the request carries none
+    expect((await prepareAsk({ pageContext: { route: '/' } })).model).toBe('amazon-bedrock/claude-opus-4-1');
     mockConfig.mockReturnValue({ assistant: { model: 'anthropic/claude-opus-4-1' } });
     resetAskServiceState();
     expect((await prepareAsk({ pageContext: { route: '/' } })).model).toBe('anthropic/claude-opus-4-1');
-    // a registry with no Claude still yields its newest model; an EMPTY registry (nothing credentialed) is a clear error, not a crash
-    sdk.ModelRuntime.create = jest.fn(async () => ({ getAvailable: jest.fn(async () => [{ provider: 'openai', id: 'gpt-x' }]) }));
+    // a bare pin matches any provider (first registry hit)
+    mockConfig.mockReturnValue({ assistant: { model: 'claude-opus-4-1' } });
+    resetAskServiceState();
+    expect((await prepareAsk({ pageContext: { route: '/' } })).model).toBe('anthropic/claude-opus-4-1');
+    // a request-level model id is not part of the contract any more: it is ignored, the config pin wins
+    expect((await prepareAsk({ pageContext: { route: '/' }, modelId: 'amazon-bedrock/claude-opus-4-1' } as any)).model).toBe('anthropic/claude-opus-4-1');
+    // an unavailable pin (wrong provider, or unknown id) is a clear error naming the pin — not another model
+    mockConfig.mockReturnValue({ assistant: { model: 'openai/claude-opus-4-1' } });
+    resetAskServiceState();
+    await expect(prepareAsk({ pageContext: { route: '/' } })).rejects.toThrow(/pinned model "openai\/claude-opus-4-1" is not in the credentialed pi registry/);
+    mockConfig.mockReturnValue({ assistant: { model: 'does-not-exist' } });
+    resetAskServiceState();
+    await expect(prepareAsk({ pageContext: { route: '/' } })).rejects.toThrow(/pinned model "does-not-exist"/);
+    expect(() => resolvePinnedModel([], 'x')).toThrow(/no credentialed model at all/);
+    // Bedrock's region inference profile is still preferred within a pin's candidates
+    expect(resolvePinnedModel([{ provider: 'amazon-bedrock', id: 'anthropic.claude-sonnet-4-6' }, { provider: 'amazon-bedrock', id: 'us.anthropic.claude-sonnet-4-6' }], 'amazon-bedrock/anthropic.claude-sonnet-4-6').id).toBe('us.anthropic.claude-sonnet-4-6');
+
+    // no pin: the newest Claude; a registry with no Claude still yields its newest model; an EMPTY registry is a clear error
     mockConfig.mockReturnValue({ assistant: {} });
+    resetAskServiceState();
+    expect((await prepareAsk({ pageContext: { route: '/' } })).model).toBe(`${mockModel.provider}/${mockModel.id}`);
+    sdk.ModelRuntime.create = jest.fn(async () => ({ getAvailable: jest.fn(async () => [{ provider: 'openai', id: 'gpt-x' }]) }));
     resetAskServiceState();
     expect((await prepareAsk({ pageContext: { route: '/' } })).model).toBe('openai/gpt-x');
     sdk.ModelRuntime.create = jest.fn(async () => ({ getAvailable: jest.fn(async () => []) }));
     resetAskServiceState();
     await expect(prepareAsk({ pageContext: { route: '/' } })).rejects.toThrow(/no credentialed model/);
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('the pi ModelRuntime is wrapped for Bedrock credential rotation before any session is created (askModelRuntime)', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    const { prepareAsk, resetAskServiceState } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    await prepareAsk({ pageContext: { route: '/' } });
+    const runtime = createAgentSession.mock.calls[0][0].modelRuntime;
+    // The wrapper's streamSimple is OUR async function, not the SDK's: a Bedrock call goes through the credential refresh.
+    expect(typeof runtime.streamSimple).toBe('function');
+    expect(runtime.streamSimple.constructor.name).toBe('AsyncFunction');
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('a failed follow-up reports THAT turn\'s error, never the previous answer (pi: prompt() resolves, the terminal assistant message carries stopReason "error")', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    const { streamAsk, prepareAsk, resetAskServiceState } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    const messages: any[] = [];
+    let script: 'ok' | 'error' | 'partial' | 'aborted' = 'ok';
+    let listener: ((e: any) => void) | null = null;
+    createAgentSession.mockImplementationOnce(async () => ({
+      session: {
+        messages,
+        subscribe: jest.fn((l: any) => { listener = l; return () => { listener = null; }; }),
+        prompt: jest.fn(async (p: string) => {
+          messages.push({ role: 'user', content: [{ type: 'text', text: p }] });
+          if (script === 'ok') messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'First answer.' }] });
+          else if (script === 'error') messages.push({ role: 'assistant', stopReason: 'error', errorMessage: 'Validation error: synthetic failure', content: [] });
+          else if (script === 'partial') {
+            listener?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Half an ' } });
+            messages.push({ role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up', content: [{ type: 'text', text: 'Half an ' }] });
+          } else messages.push({ role: 'assistant', stopReason: 'aborted', content: [] });
+        }),
+        abort: jest.fn(async () => {}),
+      },
+    }));
+    const p = await prepareAsk({ pageContext: { route: '/' } });
+    const first = await ask(streamAsk, { question: 'one', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(first.answer).toBe('First answer.');
+
+    script = 'error';
+    const second = await ask(streamAsk, { question: 'two', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(second.answer).toBeUndefined();
+    expect(second.error).toBe('Validation error: synthetic failure');
+    // the failed turn is persisted as failed (history shows the error, not a duplicate of turn one)
+    const recorded = () => appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').map(([, d]: any) => d);
+    expect(recorded()[1]).toMatchObject({ question: 'two', answer: '', error: 'Validation error: synthetic failure' });
+
+    script = 'partial';
+    const third = await ask(streamAsk, { question: 'three', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(third.error).toBe('socket hang up');
+    expect(third.events.filter((e: any) => e[0] === 'delta').map((e: any) => e[1])).toEqual(['Half an ']);
+    expect(recorded()[2]).toMatchObject({ question: 'three', answer: 'Half an ', error: 'socket hang up' });
+
+    // an interruption that was NOT ours (pi aborted the run) is reported as such, again not as the old answer
+    script = 'aborted';
+    const fourth = await ask(streamAsk, { question: 'four', pageContext: { route: '/' }, sessionId: p.sessionId });
+    expect(fourth.error).toBe('The answer was interrupted.');
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('session exclusivity: concurrent cold resumes open ONE pi session; a held session refuses extra questions without releasing the holder', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    const fs = require('fs');
+    fs.mkdirSync('/tmp/ask-proto-unit-sessions', { recursive: true });
+    fs.writeFileSync('/tmp/ask-proto-unit-sessions/2026_ask-from-disk.jsonl', '');
+    try {
+      // 1. two follow-ups race in right after a restart: one SessionManager.open, one createAgentSession
+      promptGate = () => {};
+      const prompts: Array<Promise<any>> = [
+        ask(streamAsk, { question: 'a', pageContext: { route: '/' }, sessionId: 'ask-from-disk' }),
+        ask(streamAsk, { question: 'b', pageContext: { route: '/' }, sessionId: 'ask-from-disk' }),
+      ];
+      await new Promise((r) => setTimeout(r, 30));
+      expect(sessionOpen).toHaveBeenCalledTimes(1);
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+      expect(prompted).toHaveLength(1);
+      expect(askInFlight()).toBe(1);
+
+      // 2. a THIRD and FOURTH question on the held session: refused, and the holder is still holding
+      const third = await ask(streamAsk, { question: 'c', pageContext: { route: '/' }, sessionId: 'ask-from-disk' });
+      expect(third.error).toMatch(/still answering a previous question/);
+      const fourth = await ask(streamAsk, { question: 'd', pageContext: { route: '/' }, sessionId: 'ask-from-disk' });
+      expect(fourth.error).toMatch(/still answering a previous question/);
+      expect(prompted).toHaveLength(1); // exactly one question reached pi
+      expect(askInFlight()).toBe(1); // a refused request never touched the holder's slot
+
+      // 3. the holder finishes → the session is free; the next question runs
+      (promptGate as () => void)();
+      const settled = await Promise.all(prompts);
+      expect(settled.filter((r) => r.answer === 'the answer')).toHaveLength(1);
+      expect(settled.filter((r) => /still answering/.test(r.error ?? ''))).toHaveLength(1);
+      expect(askInFlight()).toBe(0);
+      promptGate = null;
+      const after = await ask(streamAsk, { question: 'e', pageContext: { route: '/' }, sessionId: 'ask-from-disk' });
+      expect(after.answer).toBe('the answer');
+      expect(prompted).toHaveLength(2);
+    } finally {
+      fs.rmSync('/tmp/ask-proto-unit-sessions', { recursive: true, force: true });
+      delete process.env.AH_ASK_SESSIONS_DIR;
+    }
+  });
+
+  it('a held HTTP lookup is cancelled by the client disconnect and the concurrency slot is reusable within a bounded interval (real fetch, real held server)', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    mockConfig.mockReturnValue({ assistant: { maxConcurrent: 1 } });
+    const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    const http = require('http');
+    const held: Array<{ req: any; closed: boolean }> = [];
+    const server = http.createServer((req: any) => { const h = { req, closed: false }; req.on('close', () => { h.closed = true; }); held.push(h); /* never answer */ });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    process.env.AH_JUDGE_SERVER_URL = `http://127.0.0.1:${server.address().port}`;
+    try {
+      // The fake pi session behaves like the real agent loop: it runs the registered tool with the
+      // run's abort signal and only resolves prompt() once the tool has settled.
+      let runAbort: AbortController | null = null;
+      createAgentSession.mockImplementationOnce(async () => ({
+        session: {
+          messages: [],
+          subscribe: jest.fn(() => () => {}),
+          prompt: jest.fn(async () => {
+            const tools: Record<string, any> = {};
+            resourceLoaderOpts.extensionFactories[0]({ registerTool: (d: any) => { tools[d.name] = d; } });
+            runAbort = new AbortController();
+            await tools.get_report.execute('call-1', { reportId: 'held' }, runAbort.signal);
+          }),
+          abort: jest.fn(async () => { runAbort?.abort(); }),
+        },
+      }));
+      let settled = false;
+      const handle = streamAsk({ question: 'q', pageContext: { route: '/' } }, { onMeta: () => {}, onDelta: () => {}, onTool: () => {}, onDone: () => { settled = true; }, onError: () => { settled = true; } });
+      await new Promise<void>((r) => { const t = setInterval(() => { if (held.length) { clearInterval(t); r(); } }, 5); });
+      expect(askInFlight()).toBe(1);
+      const t0 = Date.now();
+      handle.abort(); // the SSE client went away
+      await new Promise<void>((r) => { const t = setInterval(() => { if (askInFlight() === 0) { clearInterval(t); r(); } }, 5); setTimeout(() => { clearInterval(t); r(); }, 1500); });
+      expect(askInFlight()).toBe(0);
+      expect(Date.now() - t0).toBeLessThan(1500);
+      expect(held[0].closed).toBe(true); // the in-flight lookup itself was torn down, not just forgotten
+      expect(settled).toBe(false); // nothing is sent to a client that left
+      const next = await ask(streamAsk, { question: 'next', pageContext: { route: '/' } });
+      expect(next.answer).toBe('the answer'); // the slot was free, no 429
+    } finally {
+      server.close();
+      delete process.env.AH_JUDGE_SERVER_URL;
+      delete process.env.AH_ASK_SESSIONS_DIR;
+    }
+  });
+
+  it('a tool lookup has a deadline of its own (assistant.toolTimeoutMs): a stalled API call becomes an error result, not a hung turn', async () => {
+    const { createAskToolsExtension } = require('@/server/services/ask/askService');
+    const http = require('http');
+    const server = http.createServer(() => { /* never answer */ });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const tools: Record<string, any> = {};
+      createAskToolsExtension(`http://127.0.0.1:${server.address().port}`, 150)({ registerTool: (d: any) => { tools[d.name] = d; } });
+      const t0 = Date.now();
+      const r = await tools.get_report.execute('id', { reportId: 'slow' });
+      expect(Date.now() - t0).toBeLessThan(1500);
+      expect(r.details).toEqual({ error: 'GET /api/storage/runs/slow timed out' });
+      const spans = await tools.query_spans.execute('id', { traceId: 't' });
+      expect(spans.details).toEqual({ error: 'traces query timed out' });
+      // pi's own abort signal cancels a lookup too (reported as cancelled, not timed out)
+      const ac = new AbortController();
+      const pending = tools.get_test_case.execute('id', { testCaseId: 'x' }, ac.signal);
+      ac.abort();
+      expect((await pending).details).toEqual({ error: 'GET /api/storage/test-cases/x was cancelled' });
+    } finally {
+      server.close();
+    }
+  });
+
+  it('turn budget: more tool lookups than assistant.maxToolCalls aborts the turn with an error that says so; the slot is released', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    mockConfig.mockReturnValue({ assistant: { maxToolCalls: 2 } });
+    const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    const sessionAbort = jest.fn(async () => {});
+    const messages: any[] = [];
+    createAgentSession.mockImplementationOnce(async () => ({
+      session: {
+        messages,
+        abort: sessionAbort,
+        subscribe: jest.fn((l: any) => {
+          // a model that keeps looking things up
+          for (let i = 0; i < 5; i++) { l({ type: 'tool_execution_start', toolName: 'get_report', args: { reportId: String(i) } }); l({ type: 'tool_execution_end', toolName: 'get_report' }); }
+          return () => {};
+        }),
+        prompt: jest.fn(async () => { messages.push({ role: 'assistant', stopReason: sessionAbort.mock.calls.length ? 'aborted' : 'stop', content: [{ type: 'text', text: 'looping' }] }); }),
+      },
+    }));
+    const r = await ask(streamAsk, { question: 'q', pageContext: { route: '/' } });
+    expect(sessionAbort).toHaveBeenCalled();
+    expect(r.error).toBe('The assistant stopped after 2 tool lookups (assistant.maxToolCalls).');
+    expect(askInFlight()).toBe(0);
+    const turn: any = appendedCustom.filter(([t]) => t === 'agent-health.ask.turn').pop()![1];
+    expect(turn.error).toContain('2 tool lookups');
+    expect(turn.toolCalls.length).toBeGreaterThanOrEqual(3); // the mock emits its events synchronously; the abort lands after them
+    delete process.env.AH_ASK_SESSIONS_DIR;
+  });
+
+  it('turn budget: the wall-clock deadline (assistant.turnTimeoutMs) aborts a turn that never finishes', async () => {
+    process.env.AH_ASK_SESSIONS_DIR = '/tmp/ask-proto-unit-sessions';
+    process.env.AH_ASK_TURN_TIMEOUT_MS = '120';
+    const { streamAsk, resetAskServiceState, askInFlight } = require('@/server/services/ask/askService');
+    resetAskServiceState();
+    const messages: any[] = [];
+    let release: (() => void) | null = null;
+    createAgentSession.mockImplementationOnce(async () => ({
+      session: {
+        messages,
+        subscribe: jest.fn(() => () => {}),
+        prompt: jest.fn(async () => { await new Promise<void>((r) => { release = r; }); messages.push({ role: 'assistant', stopReason: 'aborted', content: [] }); }),
+        abort: jest.fn(async () => { release?.(); }),
+      },
+    }));
+    const t0 = Date.now();
+    const r = await ask(streamAsk, { question: 'q', pageContext: { route: '/' } });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.error).toBe('The assistant ran out of time after 0s (assistant.turnTimeoutMs).');
+    expect(askInFlight()).toBe(0);
+    delete process.env.AH_ASK_TURN_TIMEOUT_MS;
     delete process.env.AH_ASK_SESSIONS_DIR;
   });
 });

@@ -302,6 +302,22 @@ export interface AssistantConfig {
   sessionsDir?: string;
   /** How many questions may be answered concurrently; extra requests get 429. @default 4 */
   maxConcurrent?: number;
+  /**
+   * Deadline for ONE tool lookup (a GET against this server's own API) inside
+   * an answer, in ms. @default 30000. Env override: AH_ASK_TOOL_TIMEOUT_MS.
+   */
+  toolTimeoutMs?: number;
+  /**
+   * Wall-clock budget for one answer (model calls + tool lookups), in ms. The
+   * turn is aborted and reported as an error when it runs out. @default 240000
+   * Env override: AH_ASK_TURN_TIMEOUT_MS.
+   */
+  turnTimeoutMs?: number;
+  /**
+   * Most tool lookups one answer may make before it is aborted. @default 30
+   * Env override: AH_ASK_MAX_TOOL_CALLS.
+   */
+  maxToolCalls?: number;
 }
 
 /**

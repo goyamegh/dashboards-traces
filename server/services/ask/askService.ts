@@ -36,7 +36,8 @@ import {
   type AskRefs,
   type AskSelection,
 } from './askContext';
-import { PiAskSessionStore, type AskTurn, type PiSessionManagerLike } from './askSessionStore';
+import { PiAskSessionStore, readSession, type AskTurn, type PiSessionManagerLike } from './askSessionStore';
+import { withRefreshingBedrockCredentials } from './askModelRuntime';
 
 // ============================================================================
 // The ONLY tools the assistant has. Pinned by a unit test.
@@ -49,6 +50,11 @@ export const ASK_AGENT = { key: 'agent-health-assistant', name: 'Agent Health as
 
 export const ASK_DEFAULT_MAX_CONCURRENT = 4;
 export const ASK_DEFAULT_SESSIONS_DIR = '.agent-health/ask-sessions';
+/** One tool lookup against this server's own API. */
+export const ASK_DEFAULT_TOOL_TIMEOUT_MS = 30_000;
+/** One whole answer: model calls + tool lookups. */
+export const ASK_DEFAULT_TURN_TIMEOUT_MS = 4 * 60_000;
+export const ASK_DEFAULT_MAX_TOOL_CALLS = 30;
 
 export interface AskSettings {
   enabled: boolean;
@@ -57,22 +63,36 @@ export interface AskSettings {
   /** Absolute path of the pi session directory. */
   sessionsDir: string;
   maxConcurrent: number;
+  toolTimeoutMs: number;
+  turnTimeoutMs: number;
+  maxToolCalls: number;
+}
+
+function positiveInt(...candidates: unknown[]): number | undefined {
+  for (const c of candidates) {
+    if (c === undefined || c === null || c === '') continue;
+    const n = Number(c);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return undefined;
 }
 
 /**
- * Effective assistant settings: `assistant` block of agent-health.config.ts,
- * then env overrides (AH_ASK_MODEL_ID / AH_ASK_SESSIONS_DIR), then defaults.
- * Exported for the status route and unit tests.
+ * Effective assistant settings: env overrides (AH_ASK_*), then the `assistant`
+ * block of agent-health.config.ts, then defaults. Exported for the status
+ * route and unit tests.
  */
 export function resolveAskSettings(config: { assistant?: AssistantConfig } = loadConfigSync(), env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): AskSettings {
   const a = config.assistant ?? {};
   const dir = env.AH_ASK_SESSIONS_DIR || a.sessionsDir || ASK_DEFAULT_SESSIONS_DIR;
-  const max = Number(a.maxConcurrent);
   return {
     enabled: a.enabled !== false,
     model: env.AH_ASK_MODEL_ID || a.model || undefined,
     sessionsDir: resolve(cwd, dir),
-    maxConcurrent: Number.isInteger(max) && max > 0 ? max : ASK_DEFAULT_MAX_CONCURRENT,
+    maxConcurrent: positiveInt(a.maxConcurrent) ?? ASK_DEFAULT_MAX_CONCURRENT,
+    toolTimeoutMs: positiveInt(env.AH_ASK_TOOL_TIMEOUT_MS, a.toolTimeoutMs) ?? ASK_DEFAULT_TOOL_TIMEOUT_MS,
+    turnTimeoutMs: positiveInt(env.AH_ASK_TURN_TIMEOUT_MS, a.turnTimeoutMs) ?? ASK_DEFAULT_TURN_TIMEOUT_MS,
+    maxToolCalls: positiveInt(env.AH_ASK_MAX_TOOL_CALLS, a.maxToolCalls) ?? ASK_DEFAULT_MAX_TOOL_CALLS,
   };
 }
 
@@ -93,8 +113,6 @@ export interface AskRequest {
   pageContext: AskPageContext;
   /** Existing ask session to continue (follow-up), or one returned by prepareAsk(). */
   sessionId?: string;
-  /** Pin the underlying LLM (provider-qualified or bare id). Default: newest credentialed Claude. */
-  modelId?: string;
 }
 
 export interface AskMeta {
@@ -137,12 +155,37 @@ function textResult(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 1) }], details: obj };
 }
 
-/** Read-only tools over this server's own REST API (GETs + the POST /api/traces read). */
-export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
-  const getJson = async (path: string) => {
-    const res = await fetch(`${serverUrl}${path}`);
-    if (!res.ok) return { error: `HTTP ${res.status} for ${path}` };
-    return res.json();
+/**
+ * The signal one tool lookup runs under: pi's per-turn abort signal (a client
+ * disconnect / turn-budget abort reaches the in-flight fetch AND its body
+ * read) combined with a per-call deadline, so a stalled lookup can never pin
+ * the turn — pi waits for every tool to settle before `prompt()` resolves.
+ */
+export function toolSignal(piSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return piSignal ? AbortSignal.any([piSignal, timeout]) : timeout;
+}
+
+function describeFetchFailure(err: any, what: string): string {
+  const name = err?.name ?? '';
+  if (name === 'TimeoutError') return `${what} timed out`;
+  if (name === 'AbortError') return `${what} was cancelled`;
+  return `${what} failed: ${err?.message ?? String(err)}`;
+}
+
+/**
+ * Read-only tools over this server's own REST API (GETs + the POST /api/traces
+ * read). `toolTimeoutMs` bounds each lookup (see AssistantConfig.toolTimeoutMs).
+ */
+export function createAskToolsExtension(serverUrl: string, toolTimeoutMs = ASK_DEFAULT_TOOL_TIMEOUT_MS): PiExtensionFactory {
+  const getJson = async (path: string, signal: AbortSignal | undefined) => {
+    try {
+      const res = await fetch(`${serverUrl}${path}`, { signal: toolSignal(signal, toolTimeoutMs) });
+      if (!res.ok) return { error: `HTTP ${res.status} for ${path}` };
+      return await res.json();
+    } catch (err: any) {
+      return { error: describeFetchFailure(err, `GET ${path}`) };
+    }
   };
   return (pi: PiExtensionAPI) => {
     pi.registerTool({
@@ -150,8 +193,8 @@ export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
       label: 'Get a test-case report',
       description: 'Fetch one per-test-case report (full trajectory, judge verdict + reasoning, metrics, traceId) by reportId. Only for reports NOT already in the snapshot.',
       parameters: Type.Object({ reportId: Type.String() }),
-      async execute(_id: string, p: { reportId: string }) {
-        const data: any = await getJson(`/api/storage/runs/${encodeURIComponent(p.reportId)}`);
+      async execute(_id: string, p: { reportId: string }, signal?: AbortSignal) {
+        const data: any = await getJson(`/api/storage/runs/${encodeURIComponent(p.reportId)}`, signal);
         const r = data?.run ?? data;
         if (Array.isArray(r?.trajectory)) {
           r.trajectory = r.trajectory.map((s: any, i: number) => ({
@@ -169,8 +212,8 @@ export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
       label: 'Get an evaluation run',
       description: 'Fetch an evaluation run (benchmark execution): agent, stats, per-test-case results {testCaseId: {reportId, status, testCase}}.',
       parameters: Type.Object({ runId: Type.String() }),
-      async execute(_id: string, p: { runId: string }) {
-        const data: any = await getJson(`/api/storage/evaluation-runs/${encodeURIComponent(p.runId)}`);
+      async execute(_id: string, p: { runId: string }, signal?: AbortSignal) {
+        const data: any = await getJson(`/api/storage/evaluation-runs/${encodeURIComponent(p.runId)}`, signal);
         const run = data?.evaluationRun ?? data;
         if (run?.testCaseSnapshots) {
           const names = Object.fromEntries(run.testCaseSnapshots.map((s: any) => [s.id, s.name]));
@@ -187,8 +230,8 @@ export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
       label: 'Get a test case',
       description: 'Fetch a test case definition (prompt, expected outcomes, labels).',
       parameters: Type.Object({ testCaseId: Type.String() }),
-      async execute(_id: string, p: { testCaseId: string }) {
-        const data: any = await getJson(`/api/storage/test-cases/${encodeURIComponent(p.testCaseId)}`);
+      async execute(_id: string, p: { testCaseId: string }, signal?: AbortSignal) {
+        const data: any = await getJson(`/api/storage/test-cases/${encodeURIComponent(p.testCaseId)}`, signal);
         const tc = data?.testCase ?? data;
         if (tc) delete tc.sourceCode;
         return textResult(tc);
@@ -199,8 +242,8 @@ export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
       label: 'Get a benchmark',
       description: 'Fetch a benchmark (name, test case ids, run summaries with stats).',
       parameters: Type.Object({ benchmarkId: Type.String() }),
-      async execute(_id: string, p: { benchmarkId: string }) {
-        const data: any = await getJson(`/api/storage/benchmarks/${encodeURIComponent(p.benchmarkId)}?fields=full`);
+      async execute(_id: string, p: { benchmarkId: string }, signal?: AbortSignal) {
+        const data: any = await getJson(`/api/storage/benchmarks/${encodeURIComponent(p.benchmarkId)}?fields=full`, signal);
         const b = data?.benchmark ?? data;
         if (Array.isArray(b?.runs)) {
           b.runs = b.runs.slice(-30).map((r: any) => ({ id: r.id, name: r.name, createdAt: r.createdAt, status: r.status, agentKey: r.agentKey, stats: r.stats }));
@@ -220,17 +263,23 @@ export function createAskToolsExtension(serverUrl: string): PiExtensionFactory {
         sessionId: Type.Optional(Type.String()),
         nameFilter: Type.Optional(Type.String()),
       }),
-      async execute(_id: string, p: { traceId?: string; runId?: string; sessionId?: string; nameFilter?: string }) {
+      async execute(_id: string, p: { traceId?: string; runId?: string; sessionId?: string; nameFilter?: string }, signal?: AbortSignal) {
         if (!p.traceId && !p.runId && !p.sessionId) return textResult({ error: 'Provide traceId, runId or sessionId.' });
         const body: Record<string, unknown> = { size: 300 };
         if (p.traceId) body.traceId = p.traceId;
         if (p.runId) body.runIds = [p.runId];
         if (p.sessionId) body.agents = [{ serviceName: 'unknown', sessionId: p.sessionId, startedAt: 0, endedAt: Date.now() }];
-        const res = await fetch(`${serverUrl}/api/traces`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        if (!res.ok) return textResult({ error: `traces query failed: HTTP ${res.status}` });
-        const data: any = await res.json();
+        let data: any;
+        try {
+          const res = await fetch(`${serverUrl}/api/traces`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            signal: toolSignal(signal, toolTimeoutMs),
+          });
+          if (!res.ok) return textResult({ error: `traces query failed: HTTP ${res.status}` });
+          data = await res.json();
+        } catch (err: any) {
+          return textResult({ error: describeFetchFailure(err, 'traces query') });
+        }
         let spans: any[] = Array.isArray(data?.spans) ? data.spans : [];
         if (p.nameFilter) {
           const f = p.nameFilter.toLowerCase();
@@ -255,25 +304,56 @@ function serverUrl(): string {
 }
 
 // ----------------------------------------------------------------------------
-// Process-wide runtime cache (model registry + credentials). Cheap (~50 ms) but
-// re-read every few minutes so rotated credentials / a new pin are picked up.
+// Process-wide runtime cache (pi model registry). Re-read every few minutes so
+// a new pin / newly credentialed provider is picked up. Credentials are NOT
+// what this cache is for: Bedrock calls resolve them per call through the
+// refreshing provider (askModelRuntime.ts), so a live session never signs
+// with stale keys.
 // ----------------------------------------------------------------------------
 
 interface Runtime { sdk: Awaited<ReturnType<typeof loadPiSdk>>; modelRuntime: any; model: { provider: string; id: string }; at: number; pin?: string }
 let runtimeCache: Runtime | null = null;
+let runtimePending: Promise<Runtime> | null = null;
 const RUNTIME_TTL_MS = 5 * 60 * 1000;
 
-async function getRuntime(requestedModelId?: string): Promise<Runtime> {
-  const pin = requestedModelId ?? resolveAskSettings().model;
+/**
+ * Resolve the operator's model pin against the credentialed registry.
+ * `provider/id` matches that provider only (the same id can exist under
+ * several providers — anthropic vs amazon-bedrock — and the pin decides where
+ * data is sent); a bare id matches any provider. Within the match, Bedrock's
+ * region-appropriate inference profile is preferred (findRequestedModel).
+ * An unavailable pin is an ERROR, never a silent fallback to another model.
+ */
+export function resolvePinnedModel<T extends { provider: string; id: string }>(available: T[], pin: string): T {
+  const slash = pin.indexOf('/');
+  const provider = slash > 0 ? pin.slice(0, slash) : undefined;
+  const id = slash > 0 ? pin.slice(slash + 1) : pin;
+  const pool = provider ? available.filter((m) => m.provider === provider) : available;
+  const model = findRequestedModel(pool, id);
+  if (!model) {
+    const have = available.map((m) => `${m.provider}/${m.id}`);
+    throw new Error(
+      `Agent Health assistant: pinned model "${pin}" is not in the credentialed pi registry` +
+        (have.length ? ` (available: ${have.slice(0, 8).join(', ')}${have.length > 8 ? ', …' : ''}).` : ' (no credentialed model at all).')
+    );
+  }
+  return model;
+}
+
+async function getRuntime(): Promise<Runtime> {
+  const pin = resolveAskSettings().model;
   if (runtimeCache && runtimeCache.pin === pin && Date.now() - runtimeCache.at < RUNTIME_TTL_MS) return runtimeCache;
-  const sdk = await loadPiSdk();
-  const modelRuntime = await sdk.ModelRuntime.create();
-  const available = (await modelRuntime.getAvailable()) as Array<{ provider: string; id: string }>;
-  const model = (pin ? findRequestedModel(available, pin.includes('/') ? pin.slice(pin.indexOf('/') + 1) : pin) : undefined)
-    ?? pickNewestClaudeModel(available);
-  if (!model) throw new Error('Agent Health assistant: no credentialed model in the pi registry (configure a Bedrock/Anthropic model for pi).');
-  runtimeCache = { sdk, modelRuntime, model, at: Date.now(), pin };
-  return runtimeCache;
+  if (runtimePending) return runtimePending;
+  runtimePending = (async () => {
+    const sdk = await loadPiSdk();
+    const modelRuntime = withRefreshingBedrockCredentials(await sdk.ModelRuntime.create());
+    const available = (await modelRuntime.getAvailable()) as Array<{ provider: string; id: string }>;
+    const model = pin ? resolvePinnedModel(available, pin) : pickNewestClaudeModel(available);
+    if (!model) throw new Error('Agent Health assistant: no credentialed model in the pi registry (configure a Bedrock/Anthropic model for pi).');
+    runtimeCache = { sdk, modelRuntime, model, at: Date.now(), pin };
+    return runtimeCache;
+  })().finally(() => { runtimePending = null; });
+  return runtimePending;
 }
 
 // ----------------------------------------------------------------------------
@@ -291,19 +371,26 @@ interface LiveSession {
   /** Whether any turn has been prompted in this process. */
   turns: number;
   lastUsed: number;
-  busy: boolean;
+  /**
+   * Ownership token of the turn currently using this pi session, or null when
+   * idle. Only the holder may release it or abort the session — a request
+   * refused because the session is held must not clear someone else's hold.
+   */
+  heldBy: string | null;
 }
 const live = new Map<string, LiveSession>();
+/** Cold resumes in flight, keyed by session id: two follow-ups racing after a restart open ONE pi session, not two writers on one JSONL. */
+const opening = new Map<string, Promise<LiveSession | null>>();
 const LIVE_TTL_MS = 30 * 60 * 1000;
 /** Prepared-but-never-asked sessions are cheap but unbounded under spam; keep at most this many around. */
 export const LIVE_UNUSED_MAX = 200;
 function evictUnusedLiveSessions(): void {
-  const unused = [...live.values()].filter((s) => s.turns === 0 && !s.busy).sort((a, b) => a.lastUsed - b.lastUsed);
+  const unused = [...live.values()].filter((s) => s.turns === 0 && !s.heldBy).sort((a, b) => a.lastUsed - b.lastUsed);
   for (let i = 0; i < unused.length - LIVE_UNUSED_MAX; i++) live.delete(unused[i].id);
 }
 const sweeper = setInterval(() => {
   const now = Date.now();
-  for (const [id, s] of live) if (!s.busy && now - s.lastUsed > LIVE_TTL_MS) live.delete(id);
+  for (const [id, s] of live) if (!s.heldBy && now - s.lastUsed > LIVE_TTL_MS) live.delete(id);
 }, 5 * 60 * 1000);
 if (sweeper.unref) sweeper.unref();
 
@@ -329,7 +416,7 @@ async function createPiSession(rt: Runtime, sm: PiSessionManagerLike): Promise<L
     agentDir: getAgentDir(),
     systemPromptOverride: () => buildAskSystemPrompt(),
     appendSystemPromptOverride: () => [],
-    extensionFactories: [createAskToolsExtension(serverUrl())],
+    extensionFactories: [createAskToolsExtension(serverUrl(), resolveAskSettings().toolTimeoutMs)],
     // Headless + isolated: no user extensions/skills/themes/context files.
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
   });
@@ -349,10 +436,10 @@ async function createPiSession(rt: Runtime, sm: PiSessionManagerLike): Promise<L
  * Build the page snapshot and create the pi session BEFORE the question
  * arrives. Returns the session id the client must send with `streamAsk`.
  */
-export async function prepareAsk(input: { pageContext: AskPageContext; selections?: AskSelection[]; modelId?: string }): Promise<{ sessionId: string; refs: AskRefs; loaded: string[]; model: string }> {
+export async function prepareAsk(input: { pageContext: AskPageContext; selections?: AskSelection[] }): Promise<{ sessionId: string; refs: AskRefs; loaded: string[]; model: string }> {
   const t0 = Date.now();
   const [rt, store, snapshot] = await Promise.all([
-    getRuntime(input.modelId),
+    getRuntime(),
     getStore(),
     buildAskSnapshot(getStorageModule(), resolveAskRefs(input.pageContext)),
   ]);
@@ -360,35 +447,58 @@ export async function prepareAsk(input: { pageContext: AskPageContext; selection
   const sm = store.create({ page: input.pageContext, selections, firstQuestion: '' });
   const session = await createPiSession(rt, sm);
   const id = sm.getSessionId();
-  live.set(id, { id, session, sm, model: `${rt.model.provider}/${rt.model.id}`, page: input.pageContext, snapshot, turns: 0, lastUsed: Date.now(), busy: false });
+  live.set(id, { id, session, sm, model: `${rt.model.provider}/${rt.model.id}`, page: input.pageContext, snapshot, turns: 0, lastUsed: Date.now(), heldBy: null });
   evictUnusedLiveSessions();
   debug('Ask', 'prepared', id, 'in', Date.now() - t0, 'ms; loaded:', snapshot.loaded.join(', '));
   return { sessionId: id, refs: snapshot.refs, loaded: snapshot.loaded, model: `${rt.model.provider}/${rt.model.id}` };
 }
 
-/** Get a live session: prepared in memory, or re-opened from its pi JSONL file (restart), or null. */
+/**
+ * Get a live session: prepared in memory, or re-opened from its pi JSONL file
+ * (restart), or null. Cold opens are single-flight per id.
+ */
 async function resumeSession(id: string, rt: Runtime): Promise<LiveSession | null> {
   const found = live.get(id);
   if (found) return found;
-  const store = await getStore();
-  const sm = store.open(id);
-  if (!sm) return null;
-  const detail = store.get(id);
-  const session = await createPiSession(rt, sm);
-  const ls: LiveSession = { id, session, sm, model: `${rt.model.provider}/${rt.model.id}`, page: detail?.page ?? { route: '/' }, turns: detail?.turns.length ?? 1, lastUsed: Date.now(), busy: false };
-  live.set(id, ls);
-  debug('Ask', 'resumed pi session from file', sm.getSessionFile());
-  return ls;
+  const inFlight = opening.get(id);
+  if (inFlight) return inFlight;
+  const open = (async () => {
+    const store = await getStore();
+    const sm = store.open(id);
+    if (!sm) return null;
+    const detail = readSession(sm);
+    const session = await createPiSession(rt, sm);
+    const ls: LiveSession = { id, session, sm, model: `${rt.model.provider}/${rt.model.id}`, page: detail?.page ?? { route: '/' }, turns: detail?.turns.length ?? 1, lastUsed: Date.now(), heldBy: null };
+    live.set(id, ls);
+    debug('Ask', 'resumed pi session from file', sm.getSessionFile());
+    return ls;
+  })().finally(() => { opening.delete(id); });
+  opening.set(id, open);
+  return open;
 }
 
-function extractLastAssistantText(messages: any[]): string {
-  let last = '';
-  for (const m of messages ?? []) {
-    if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue;
-    const text = m.content.filter((c: any) => c?.type === 'text' && typeof c.text === 'string').map((c: any) => c.text).join('');
-    if (text.trim()) last = text;
-  }
-  return last;
+function textOf(message: any): string {
+  return Array.isArray(message?.content)
+    ? message.content.filter((c: any) => c?.type === 'text' && typeof c.text === 'string').map((c: any) => c.text).join('')
+    : '';
+}
+
+/**
+ * The outcome of ONE turn, read from the messages pi appended during it (never
+ * from earlier turns: a failed follow-up must not surface the previous
+ * answer). pi reports provider failures as an assistant message with
+ * `stopReason: "error"` — `prompt()` resolves normally — so the terminal
+ * assistant message's stop reason decides.
+ */
+export function summarizeTurn(turnMessages: any[]): { answer: string; error?: string; aborted?: boolean } {
+  const assistants = (turnMessages ?? []).filter((m) => m?.role === 'assistant');
+  const terminal = assistants[assistants.length - 1];
+  // The answer is the final assistant text of this turn (after any tool round-trips).
+  let answer = '';
+  for (const m of assistants) { const t = textOf(m); if (t.trim()) answer = t; }
+  if (terminal?.stopReason === 'aborted') return { answer, aborted: true };
+  if (terminal?.stopReason === 'error') return { answer, error: terminal.errorMessage || 'The model call failed.' };
+  return { answer };
 }
 
 // ============================================================================
@@ -401,12 +511,23 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
   let firstTokenMs: number | undefined;
   const firstToken = () => { if (firstTokenMs === undefined) firstTokenMs = Date.now() - startedAt; };
   const toolCalls: string[] = [];
+  const token = `hold-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let ls: LiveSession | null = null;
   let counted = false;
+  /** Why this turn was cut short by us (client gone / budget), if it was. */
+  let cutShort: string | undefined;
+
+  const releaseSlot = () => { if (counted) { answering -= 1; counted = false; } };
+  const releaseHold = () => { if (ls && ls.heldBy === token) { ls.heldBy = null; ls.lastUsed = Date.now(); } };
+  const abortTurn = (reason?: string) => {
+    if (reason && !cutShort) cutShort = reason;
+    if (ls && ls.heldBy === token) ls.session.abort?.().catch(() => { /* ignore */ });
+  };
 
   (async () => {
     try {
-      const rt = await getRuntime(req.modelId);
+      const settings = resolveAskSettings();
+      const rt = await getRuntime();
       const selections = (req.selections ?? []).filter((s) => s && typeof s.text === 'string' && s.text.trim());
       let prepared = false;
       if (req.sessionId) {
@@ -415,16 +536,17 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
         prepared = !!ls.snapshot;
       }
       if (!ls) {
-        const p = await prepareAsk({ pageContext: req.pageContext, selections, modelId: req.modelId });
+        const p = await prepareAsk({ pageContext: req.pageContext, selections });
         ls = live.get(p.sessionId)!;
       }
-      if (ls.busy) throw new Error('This ask session is still answering a previous question.');
-      const { maxConcurrent } = resolveAskSettings();
-      if (answering >= maxConcurrent) throw new AskBusyError(maxConcurrent);
+      if (ls.heldBy) throw new Error('This ask session is still answering a previous question.');
+      if (answering >= settings.maxConcurrent) throw new AskBusyError(settings.maxConcurrent);
+      // From here on this request OWNS the session and a concurrency slot.
       answering += 1;
       counted = true;
-      ls.busy = true;
+      ls.heldBy = token;
       ls.lastUsed = Date.now();
+      if (signal.aborted) return; // the client left while we were resuming; nothing was started
       if (ls.turns === 0) ls.sm.appendSessionInfo(req.question.slice(0, 120));
 
       // First turn: the prepared snapshot. Follow-ups: pi already has the
@@ -437,12 +559,8 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
       ls.snapshot = undefined;
       const refs = snapshot?.refs ?? resolveAskRefs(req.pageContext);
       const turnId = `turn-${Date.now().toString(36)}`;
-      if (signal.aborted) {
-        // The client left while the snapshot was being built: release the
-        // concurrency slot (it was already counted) and never invoke the model.
-        answering -= 1; counted = false; ls.busy = false;
-        return;
-      }
+      // The client left while the snapshot was being built: never invoke the model.
+      if (signal.aborted) return;
       cb.onMeta({
         sessionId: ls.id, turnId,
         agent: { ...ASK_AGENT, model: ls.model },
@@ -471,45 +589,55 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
         } else if (event.type === 'tool_execution_start') {
           toolCalls.push(event.toolName);
           cb.onTool({ name: event.toolName, status: 'start', args: event.args });
+          if (toolCalls.length > settings.maxToolCalls) {
+            abortTurn(`The assistant stopped after ${settings.maxToolCalls} tool lookups (assistant.maxToolCalls).`);
+          }
         } else if (event.type === 'tool_execution_end') {
           cb.onTool({ name: event.toolName, status: 'end', isError: !!event.isError });
         }
       });
+      // Turn budget: wall clock for model calls + tool lookups together.
+      const budget = setTimeout(() => abortTurn(`The assistant ran out of time after ${Math.round(settings.turnTimeoutMs / 1000)}s (assistant.turnTimeoutMs).`), settings.turnTimeoutMs);
       const turnStartedAt = new Date().toISOString();
+      const firstNewMessage = ls.session.messages?.length ?? 0;
       try {
         await ls.session.prompt(userPrompt);
       } finally {
+        clearTimeout(budget);
         unsubscribe?.();
-        answering -= 1;
-        counted = false;
         ls.turns += 1;
-        ls.busy = false;
-        ls.lastUsed = Date.now();
       }
-      const answer = extractLastAssistantText(ls.session.messages) || streamed;
+      const outcome = summarizeTurn((ls.session.messages ?? []).slice(firstNewMessage));
+      const answer = outcome.answer || streamed;
       const durationMs = Date.now() - startedAt;
+      let error: string | undefined;
+      if (cutShort) error = cutShort;
+      else if (outcome.error) error = outcome.error;
+      else if (outcome.aborted) error = signal.aborted ? 'Cancelled' : 'The answer was interrupted.';
+      else if (!answer.trim()) error = 'The assistant returned no text.';
       const turn: AskTurn = {
         id: turnId, question: req.question, answer, selections, startedAt: turnStartedAt,
-        completedAt: new Date().toISOString(), durationMs, firstTokenMs, toolCalls: [...toolCalls],
-        error: answer.trim() ? undefined : 'The assistant returned no text.',
+        completedAt: new Date().toISOString(), durationMs, firstTokenMs, toolCalls: [...toolCalls], error,
       };
       (await getStore()).recordTurn(ls.sm, turn);
       if (signal.aborted) return;
-      if (!answer.trim()) cb.onError('The assistant returned no text.');
+      if (error) cb.onError(error);
       else cb.onDone({ answer, durationMs, firstTokenMs, toolCalls: [...toolCalls] });
     } catch (err: any) {
       const message = err?.message ?? String(err);
       debug('Ask', 'failed:', message);
-      if (counted) { answering -= 1; counted = false; }
-      if (ls) ls.busy = false;
       if (!signal.aborted) cb.onError(message);
+    } finally {
+      // Whatever happened, this request gives back exactly what it took.
+      releaseSlot();
+      releaseHold();
     }
   })();
 
   return {
     abort() {
       signal.aborted = true;
-      ls?.session.abort?.().catch(() => { /* ignore */ });
+      abortTurn();
     },
   };
 }
@@ -517,7 +645,9 @@ export function streamAsk(req: AskRequest, cb: AskCallbacks): AskHandle {
 /** Test hook: drop in-memory sessions and the runtime cache. @internal */
 export function resetAskServiceState(): void {
   live.clear();
+  opening.clear();
   runtimeCache = null;
+  runtimePending = null;
   storeSingleton = null;
   answering = 0;
 }
