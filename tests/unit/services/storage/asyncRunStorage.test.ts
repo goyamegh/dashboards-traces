@@ -134,6 +134,16 @@ describe('AsyncRunStorage', () => {
       );
     });
 
+    it('persists performanceMetrics through toStorageFormat (write side of the read mapper\'s round-trip)', async () => {
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-pm'));
+      const report = createMockReport();
+      (report as any).performanceMetrics = { durationMs: 36900, agentDurationMs: 34000 };
+      await asyncRunStorage.saveReport(report);
+      expect(mockOsRuns.create).toHaveBeenCalledWith(
+        expect.objectContaining({ performanceMetrics: { durationMs: 36900, agentDurationMs: 34000 } })
+      );
+    });
+
     it('persists evaluatorId + judgeModelId through toStorageFormat (write side of the PR #206/#390 round-trip)', async () => {
       // The read mapper (toTestCaseRun) and the server-side save path both
       // carry these; the client-side write mapper used to drop them, so a
