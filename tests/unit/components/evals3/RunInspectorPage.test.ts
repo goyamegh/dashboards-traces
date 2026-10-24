@@ -318,6 +318,28 @@ beforeEach(() => {
 });
 
 describe('RunInspectorPage — lazy report loading', () => {
+  it('stages a legacy agent failure (no failureStage, only the traceError kind token) as AGENT ERROR from the summary row — not JUDGE ERROR', async () => {
+    // Reports written before `failureStage` existed carry the stage only as a
+    // `(kind=agent_failed)` token in `traceError`. The retired run-detail page
+    // loaded full reports and got this right; the inspector rows render from
+    // the summary projection, which therefore has to include `traceError`.
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(1));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(1));
+    mockGetReportSummariesByIds.mockResolvedValue({
+      'rep-0': {
+        id: 'rep-0', status: 'completed', passFailStatus: null, metricsStatus: 'error',
+        traceError: 'Agent run did not complete (kind=agent_failed): Subprocess timed out after 600000ms',
+      },
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(1));
+    const label = screen.getByTestId('status-label');
+    expect(label.textContent).toBe('AGENT ERROR');
+    expect(label.getAttribute('data-stage')).toBe('agent');
+  });
+
   it('shows · conc N in the header meta when the run has a concurrency value, and omits it for legacy runs', async () => {
     const bench = makeBenchmark(2);
     (bench.runs[0] as any).concurrency = 3;
