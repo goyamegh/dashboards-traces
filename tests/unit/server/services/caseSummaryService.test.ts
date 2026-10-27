@@ -117,6 +117,18 @@ function judgeErrorReport(): TestCaseRun {
   });
 }
 
+/** Code-SDK shape: verdict from code assertions, no LLM judge at all. */
+function codeSdkReport(overrides: Partial<TestCaseRun> = {}): TestCaseRun {
+  return passedReport({
+    passFailStatus: 'failed', score: undefined, llmJudgeReasoning: '', judgeProvider: 'none', judgeModelId: 'agent-trace-judge',
+    matcherResults: [
+      { description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion', actual: ['doc-a'] } as any,
+      { description: 'result to have called tool search', pass: false, method: 'code-assertion', errorMessage: 'expected search, got none' } as any,
+    ],
+    ...overrides,
+  });
+}
+
 function llmReply(parts: { asked: string; agent: string; verdict: string }, wrap = (s: string) => s) {
   return { output: { message: { content: [{ text: wrap(JSON.stringify(parts)) }] } } };
 }
@@ -179,6 +191,16 @@ describe('caseSummaryService — inputs builder', () => {
     expect(inputs.expectedOutcomes).toEqual(['new outcome']);
   });
 
+  it('collects per-check verdicts from matcherResults and drops the judge model for judge-less code-SDK reports', () => {
+    const inputs = buildCaseSummaryInputs(codeSdkReport(), testCase());
+    expect(inputs.checks).toEqual([
+      { description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion' },
+      { description: 'result to have called tool search', pass: false, method: 'code-assertion', errorMessage: 'expected search, got none' },
+    ]);
+    expect(inputs.judgeModel).toBeUndefined();
+    expect(inputs.reasoning).toBe('');
+  });
+
   it('truncateForSummary collapses whitespace and appends an ellipsis', () => {
     expect(truncateForSummary('  a   b\n\nc ', 100)).toBe('a b c');
     expect(truncateForSummary('abcdefgh', 5)).toBe('abcd…');
@@ -210,6 +232,16 @@ describe('caseSummaryService — deterministic fallback', () => {
     expect(parts.agent).toContain('answered: “Root cause');
   });
 
+  it('code-SDK report with no judge reasoning: the verdict sentence explains itself from the checks', () => {
+    const failed = buildFallbackSummaryParts(buildCaseSummaryInputs(codeSdkReport(), testCase()));
+    expect(failed.verdict).toBe("Verdict: FAILED — 1 of 2 checks failed, e.g. result to have called tool search.");
+    const passed = buildFallbackSummaryParts(buildCaseSummaryInputs(codeSdkReport({
+      passFailStatus: 'passed',
+      matcherResults: [{ description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion' } as any],
+    }), testCase()));
+    expect(passed.verdict).toBe("Verdict: PASSED — all 1 check passed ([ …(3) ] to include 'doc-a').");
+  });
+
   it('attaches the model error and marks source=fallback', () => {
     const s = buildFallbackSummary(buildCaseSummaryInputs(passedReport(), testCase()), 'boom');
     expect(s.source).toBe('fallback');
@@ -229,6 +261,10 @@ describe('caseSummaryService — prompt + parser', () => {
     expect(notJudged).toContain('this run was NOT judged');
     expect(notJudged).toContain('not_judged_reason: stage=agent');
     expect(notJudged).not.toContain('judge_reasoning:');
+    const code = buildCaseSummaryPrompt(buildCaseSummaryInputs(codeSdkReport(), testCase()));
+    expect(code).toContain('checks (1/2 passed):');
+    expect(code).toContain('  - [FAIL] (code-assertion) result to have called tool search — expected search, got none');
+    expect(code).not.toContain('judge_model:');
   });
 
   it('parses plain JSON, fenced JSON, JSON with prose around it, and trailing commas', () => {

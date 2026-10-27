@@ -50,6 +50,7 @@ export const CASE_SUMMARY_LIMITS = {
   answer: 1500,
   reasoning: 1500,
   tools: 12,
+  checks: 8,
 } as const;
 
 /** Default wall-clock budget for one LLM summary call. */
@@ -85,6 +86,12 @@ export interface CaseSummaryInputs {
   score?: number;
   reasoning: string;
   judgeModel?: string;
+  /**
+   * Per-check verdicts from `matcherResults` (code assertions, trace checks,
+   * deterministic evaluators, judge() calls). Code-SDK reports often carry
+   * NO judge reasoning at all — these checks are then the only "why".
+   */
+  checks: Array<{ description: string; pass: boolean; method: string; errored?: boolean; errorMessage?: string }>;
 }
 
 function extractFinalAnswer(report: TestCaseRun): string {
@@ -169,8 +176,22 @@ export function buildCaseSummaryInputs(report: TestCaseRun, testCase: TestCase |
     notJudged,
     score: typeof report.score === 'number' ? report.score : undefined,
     reasoning: verdict === 'not_judged' ? '' : truncateForSummary(getJudgeReasoningText(report), CASE_SUMMARY_LIMITS.reasoning),
-    judgeModel: report.judgeModel || report.judgeModelId,
+    // `judgeProvider: 'none'` = a code-SDK body that made no LLM judge call;
+    // naming the run's configured judge would misattribute the verdict.
+    judgeModel: report.judgeProvider === 'none' ? undefined : (report.judgeModel || report.judgeModelId),
+    checks: extractChecks(report),
   };
+}
+
+function extractChecks(report: TestCaseRun): CaseSummaryInputs['checks'] {
+  const list = Array.isArray(report.matcherResults) ? report.matcherResults : [];
+  return list.slice(0, CASE_SUMMARY_LIMITS.checks).map(m => ({
+    description: truncateForSummary(m.description, 160),
+    pass: !!m.pass,
+    method: String(m.method || 'check'),
+    ...(m.errored ? { errored: true } : {}),
+    ...(m.errorMessage ? { errorMessage: truncateForSummary(m.errorMessage, 160) } : {}),
+  }));
 }
 
 /** Stable short hash of the inputs — the cache key stored as `caseSummary.inputsHash`. */
@@ -238,8 +259,17 @@ export function buildFallbackSummaryParts(inputs: CaseSummaryInputs): CaseSummar
   } else {
     const label = inputs.verdict === 'passed' ? 'PASSED' : 'FAILED';
     const score = typeof inputs.score === 'number' ? ` (score ${Math.round(inputs.score * 100)}%)` : '';
-    const why = firstSentence(inputs.reasoning);
-    verdict = sentence(`Judge verdict: ${label}${score}${why ? ` — ${why.replace(/\.$/, '')}` : ''}`);
+    let why = firstSentence(inputs.reasoning);
+    if (!why && inputs.checks.length) {
+      const failed = inputs.checks.filter(c => !c.pass);
+      why = failed.length
+        ? `${failed.length} of ${inputs.checks.length} checks failed, e.g. ${failed[0].description}`
+        : `all ${inputs.checks.length} check${inputs.checks.length === 1 ? '' : 's'} passed (${inputs.checks[0].description})`;
+    }
+    // "Judge verdict" when an LLM judge reasoned; plain "Verdict" when the
+    // outcome came from code checks alone (code-SDK bodies without judge()).
+    const head = inputs.reasoning || !inputs.checks.length ? 'Judge verdict' : 'Verdict';
+    verdict = sentence(`${head}: ${label}${score}${why ? ` — ${why.replace(/\.$/, '')}` : ''}`);
   }
 
   return { asked, agent, verdict };
@@ -292,6 +322,10 @@ export function buildCaseSummaryPrompt(inputs: CaseSummaryInputs): string {
   if (inputs.notJudged) lines.push(`not_judged_reason: stage=${inputs.notJudged.stage}; ${inputs.notJudged.cause}`);
   if (typeof inputs.score === 'number') lines.push(`score: ${Math.round(inputs.score * 100)}%`);
   if (inputs.reasoning) lines.push(`judge_reasoning: ${inputs.reasoning}`);
+  if (inputs.checks.length) {
+    lines.push(`checks (${inputs.checks.filter(c => c.pass).length}/${inputs.checks.length} passed):`);
+    for (const c of inputs.checks) lines.push(`  - [${c.errored ? 'ERROR' : c.pass ? 'PASS' : 'FAIL'}] (${c.method}) ${c.description}${c.errorMessage ? ` — ${c.errorMessage}` : ''}`);
+  }
   if (inputs.judgeModel) lines.push(`judge_model: ${inputs.judgeModel}`);
   lines.push('');
   lines.push('Return only: {"asked": "...", "agent": "...", "verdict": "..."}');
