@@ -31,24 +31,30 @@ interface CaseTldrCardProps {
 }
 
 type CardState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; summary: CaseSummary; cached: boolean }
-  | { kind: 'error'; message: string };
+  | { kind: 'loading'; key: string }
+  | { kind: 'ready'; key: string; summary: CaseSummary; cached: boolean }
+  | { kind: 'error'; key: string; message: string };
 
 /**
  * Everything on the report that, if it changes, must refetch the summary.
  * The SERVER decides freshness via its inputs hash; this key only makes the
  * client ask again when the judgement visibly changed (Retry judgement
- * reloads the report with a new `judgementRetriedAt`).
+ * reloads the report with a new `judgementRetriedAt`) and tags each state
+ * with the report it belongs to, so a report switch never shows the previous
+ * report's text for a frame.
  */
 function judgementKey(report: EvaluationReport): string {
   return [
     report.id,
     report.judgementRetriedAt ?? '',
+    report.judgementRetryCount ?? '',
     report.passFailStatus ?? '',
     report.metricsStatus ?? '',
     report.failureStage ?? '',
+    report.score ?? '',
     (report.llmJudgeReasoning ?? '').length,
+    report.matcherResults?.length ?? '',
+    report.trajectory?.length ?? '',
   ].join('|');
 }
 
@@ -60,8 +66,11 @@ function shortModel(model?: string): string | undefined {
 }
 
 export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, className }) => {
-  const [state, setState] = useState<CardState>({ kind: 'loading' });
   const key = judgementKey(report);
+  const [stored, setStored] = useState<CardState>({ kind: 'loading', key });
+  // A state tagged with another report's key is never rendered — show the
+  // skeleton until this report's own request settles.
+  const state: CardState = stored.key === key ? stored : { kind: 'loading', key };
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
@@ -69,14 +78,14 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, clas
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-      setState({ kind: 'loading' });
+      setStored({ kind: 'loading', key });
       try {
         const res = await fetchCaseSummary(report.id, { force, signal: controller.signal });
         if (controller.signal.aborted) return;
-        setState({ kind: 'ready', summary: res.summary, cached: res.cached });
+        setStored({ kind: 'ready', key, summary: res.summary, cached: res.cached });
       } catch (err: any) {
         if (controller.signal.aborted) return;
-        setState({ kind: 'error', message: err?.message || 'Summary request failed' });
+        setStored({ kind: 'error', key, message: err?.message || 'Summary request failed' });
       }
     },
     // `key` folds in every judgement field we care about; report.id is part of it.

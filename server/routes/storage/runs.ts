@@ -14,7 +14,7 @@ import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '../../adapters/index.js';
 import { refreshBenchmarkRunStatsByReportId } from '../../services/benchmarkRunStats.js';
-import { generateCaseSummary } from '../../services/caseSummaryService.js';
+import { generateCaseSummary, buildCaseSummaryInputs, hashCaseSummaryInputs } from '../../services/caseSummaryService.js';
 import {
   SAMPLE_RUNS,
   getSampleRun,
@@ -564,14 +564,28 @@ router.post('/api/storage/runs/:id/summary', async (req: Request, res: Response)
     if (!report) {
       return res.status(404).json({ error: 'Run not found' });
     }
-    const testCase = report.testCaseId
-      ? await storage.testCases.getById(report.testCaseId).catch(() => null)
-      : null;
+    // A missing test case (deleted since the run) is a legitimate state —
+    // the summary just lacks the prompt. A FAILING test-case store is not:
+    // let it surface as a 500 rather than caching a degraded summary.
+    const testCase = report.testCaseId ? await storage.testCases.getById(report.testCaseId) : null;
     const result = await generateCaseSummary(report as TestCaseRun, testCase, {
       force,
       persist: isSampleId(id)
         ? undefined
-        : (summary) => storage.runs.update(id, { caseSummary: summary } as Partial<TestCaseRun>),
+        : async (summary) => {
+            // Stale-write guard: a re-judge may have landed while the model
+            // was writing. Persist only if the report STILL hashes to the
+            // inputs this summary was written from; otherwise the next view
+            // regenerates against the new judgement.
+            const fresh = await storage.runs.getById(id);
+            if (!fresh) return;
+            const currentHash = hashCaseSummaryInputs(buildCaseSummaryInputs(fresh as TestCaseRun, testCase));
+            if (currentHash !== summary.inputsHash) {
+              debug('StorageAPI', `Case summary for ${id} is already stale (report changed during generation); not cached`);
+              return;
+            }
+            await storage.runs.update(id, { caseSummary: summary } as Partial<TestCaseRun>);
+          },
     });
     res.json(result);
   } catch (error: any) {

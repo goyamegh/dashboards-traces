@@ -19,9 +19,13 @@
  *   1. first view     → model called once, `source: 'llm'`, persisted on the report
  *   2. second view    → `cached: true`, no model call
  *   3. re-judge (PATCH verdict + reasoning) → hash mismatch → model called again, new text persisted
+ *   3b. re-judge DURING generation → the finished summary is NOT persisted (stale-write guard)
  *   4. model 500s     → `source: 'fallback'` + error text; the persisted LLM summary is left untouched
  *   5. model hangs    → timeout → fallback says so
  *   6. unknown report → 404
+ *
+ * The verdict sentence's label is always composed server-side from the
+ * report (the model supplies only the "why"), which 1) and 3) assert.
  *
  * Run:
  *   npm run test:integration -- --testPathPattern=caseSummary.integration
@@ -38,14 +42,17 @@ jest.mock('@/lib/debug', () => ({ debug: jest.fn() }));
 const DATA_DIR = path.join(process.cwd(), '.agent-health-test-data', `caseSummary-${process.pid}`);
 const FAKE_KEY_ID = 'AKIACASESUMMARYTEST1';
 
-type FakeMode = 'ok' | 'error' | 'hang';
+type FakeMode = 'ok' | 'error' | 'hang' | 'hold';
 
 interface FakeBedrock {
   server: http2.Http2Server;
   url: string;
   mode: FakeMode;
   calls: Array<{ authorization: string; modelPath: string; body: any }>;
-  nextParts: { asked: string; agent: string; verdict: string };
+  nextParts: { asked: string; agent: string; why: string };
+  /** 'hold' mode: responders parked until release() is called. */
+  held: Array<() => void>;
+  release: () => void;
 }
 
 function startFakeBedrock(): Promise<FakeBedrock> {
@@ -54,7 +61,9 @@ function startFakeBedrock(): Promise<FakeBedrock> {
     url: '',
     mode: 'ok',
     calls: [],
-    nextParts: { asked: 'a', agent: 'b', verdict: 'c' },
+    nextParts: { asked: 'a', agent: 'b', why: 'c' },
+    held: [],
+    release: () => { const h = fake.held; fake.held = []; h.forEach(fn => fn()); },
   };
   // The Bedrock Runtime client's default request handler is HTTP/2
   // (NodeHttp2Handler) — a plain-h2c http2 server is what it will dial.
@@ -71,13 +80,17 @@ function startFakeBedrock(): Promise<FakeBedrock> {
         res.end(JSON.stringify({ message: 'fake bedrock is down' }));
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        output: { message: { role: 'assistant', content: [{ text: JSON.stringify(fake.nextParts) }] } },
-        stopReason: 'end_turn',
-        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
-        metrics: { latencyMs: 5 },
-      }));
+      const answer = () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          output: { message: { role: 'assistant', content: [{ text: JSON.stringify(fake.nextParts) }] } },
+          stopReason: 'end_turn',
+          usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+          metrics: { latencyMs: 5 },
+        }));
+      };
+      if (fake.mode === 'hold') { fake.held.push(answer); return; }
+      answer();
     });
   });
   return new Promise((resolve) => {
@@ -164,13 +177,17 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     fake.nextParts = {
       asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
       agent: 'The agent read the scheduler config and found the token expiring at 02:00, proposing automatic rotation.',
-      verdict: 'PASSED — both expected outcomes were met.',
+      why: 'both expected outcomes were met',
     };
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(false);
     expect(res.body.summary.source).toBe('llm');
-    expect(res.body.summary.parts).toEqual(fake.nextParts);
+    expect(res.body.summary.parts).toEqual({
+      asked: fake.nextParts.asked,
+      agent: fake.nextParts.agent,
+      verdict: 'Judge verdict: PASSED (score 85%) — both expected outcomes were met.',
+    });
     expect(res.body.summary.inputsHash).toMatch(/^[0-9a-f]{16}$/);
     expect(res.body.summary.model).toMatch(/anthropic\.claude/);
 
@@ -180,9 +197,9 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     expect(fake.calls[0].modelPath).toMatch(/^\/model\/.+\/converse$/);
     // The prompt the model saw carried the bounded fields, not the whole report.
     const userText: string = fake.calls[0].body.messages[0].content[0].text;
-    expect(userText).toContain('prompt: Why does the nightly report job fail');
-    expect(userText).toContain('tools_used: read_config');
-    expect(userText).toContain("verdict: passed");
+    expect(userText).toContain('"prompt": "Why does the nightly report job fail');
+    expect(userText).toContain('"read_config"');
+    expect(userText).toContain('"verdict": "passed"');
 
     const stored = await request(app).get(`/api/storage/runs/${reportId}`);
     expect(stored.body.caseSummary).toEqual(res.body.summary);
@@ -206,6 +223,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
       expect(a.status).toBe(200);
       expect(b.status).toBe(200);
       expect(a.body.summary).toEqual(b.body.summary);
+      expect(a.body.summary.parts.verdict).toBe(`Judge verdict: PASSED — ${fake.nextParts.why}.`);
       expect(a.body.summary.source).toBe('llm');
       expect(fake.calls).toHaveLength(before + 1);
     } finally {
@@ -218,7 +236,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(true);
-    expect(res.body.summary.parts).toEqual(fake.nextParts);
+    expect(res.body.summary.parts.asked).toBe(fake.nextParts.asked);
     expect(fake.calls).toHaveLength(before);
   });
 
@@ -237,20 +255,57 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     fake.nextParts = {
       asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
       agent: 'The agent read the scheduler config and found the token expiring at 02:00.',
-      verdict: 'FAILED — the proposed rotation would run after the job starts.',
+      why: 'the proposed rotation would run after the job starts',
     };
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(false);
     expect(res.body.summary.source).toBe('llm');
-    expect(res.body.summary.parts.verdict).toBe(fake.nextParts.verdict);
+    const expectedVerdict = 'Judge verdict: FAILED (score 85%) — the proposed rotation would run after the job starts.';
+    expect(res.body.summary.parts.verdict).toBe(expectedVerdict);
     expect(res.body.summary.inputsHash).not.toBe(prev.inputsHash);
     expect(fake.calls).toHaveLength(before + 1);
-    expect(fake.calls[before].body.messages[0].content[0].text).toContain('verdict: failed');
+    expect(fake.calls[before].body.messages[0].content[0].text).toContain('"verdict": "failed"');
 
     const stored = await request(app).get(`/api/storage/runs/${reportId}`);
     expect(stored.body.caseSummary.inputsHash).toBe(res.body.summary.inputsHash);
-    expect(stored.body.caseSummary.parts.verdict).toBe(fake.nextParts.verdict);
+    expect(stored.body.caseSummary.parts.verdict).toBe(expectedVerdict);
+  });
+
+  it('3b) a re-judge that lands WHILE the model is writing: the finished summary is returned but NOT cached (stale-write guard)', async () => {
+    // Make the cache stale so the route must ask the model, then hold the
+    // model's reply until a PATCH has changed the judgement underneath it.
+    await request(app).patch(`/api/storage/runs/${reportId}`).send({ llmJudgeReasoning: 'Reasoning v3 — about to be re-judged again.' });
+    const stored = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
+    fake.mode = 'hold';
+    // supertest requests are lazy — `.then` is what actually sends it.
+    const pending = request(app).post(`/api/storage/runs/${reportId}/summary`).send({}).then(r => r);
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const t = setInterval(() => {
+        if (fake.held.length) { clearInterval(t); resolve(); }
+        else if (Date.now() - started > 5000) { clearInterval(t); reject(new Error('model request never reached the fake endpoint')); }
+      }, 10);
+    });
+    await request(app).patch(`/api/storage/runs/${reportId}`).send({ llmJudgeReasoning: 'Reasoning v4 — landed during generation.' });
+    fake.nextParts = { asked: 'a', agent: 'b', why: 'written against v3' };
+    fake.release();
+    fake.mode = 'ok';
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(res.body.summary.source).toBe('llm');
+    expect(res.body.summary.parts.verdict).toContain('written against v3');
+    // Not persisted: the stored summary is the pre-existing one, and the next
+    // view regenerates against v4.
+    const after = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
+    expect(after).toEqual(stored);
+    const before = fake.calls.length;
+    fake.nextParts = { asked: 'a', agent: 'b', why: 'written against v4' };
+    const next = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+    expect(next.body.cached).toBe(false);
+    expect(next.body.summary.parts.verdict).toContain('written against v4');
+    expect(fake.calls).toHaveLength(before + 1);
+    expect((await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary.parts.verdict).toContain('written against v4');
   });
 
   it('4) model error → honest field-based fallback with the error; the stored LLM summary is untouched', async () => {

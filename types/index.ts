@@ -901,7 +901,9 @@ export interface TestCaseRun {
    * Cached TL;DR of this run (see {@link CaseSummary}), written lazily by
    * `POST /api/storage/runs/:id/summary` on first view. Only LLM-written
    * summaries are persisted; `inputsHash` ties the text to the exact prompt /
-   * answer / judgement it was written from, so a re-judge invalidates it.
+   * answer / judgement it was written from, so a re-judge invalidates it. The
+   * verdict sentence's label is always composed from this report's own
+   * fields — the model only contributes the reason.
    */
   caseSummary?: CaseSummary;
 }
@@ -923,8 +925,6 @@ export interface CaseSummaryParts {
 export interface CaseSummary {
   source: 'llm' | 'fallback';
   parts: CaseSummaryParts;
-  /** `parts` joined into one paragraph. */
-  text: string;
   /** Resolved model id for `source: 'llm'`. */
   model?: string;
   generatedAt: string;

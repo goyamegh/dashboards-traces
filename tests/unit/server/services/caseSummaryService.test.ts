@@ -37,11 +37,17 @@ jest.mock('@/lib/aws/refreshingCredentialProvider', () => ({
 
 jest.mock('@/lib/debug', () => ({ debug: jest.fn() }));
 
+jest.mock('@/lib/bedrockCompat', () => {
+  const actual = jest.requireActual('@/lib/bedrockCompat');
+  return { ...actual, resolveRegionAwareModelId: jest.fn((id: string) => actual.resolveRegionAwareModelId(id)) };
+});
+
 import {
   buildCaseSummaryInputs,
   buildFallbackSummary,
   buildFallbackSummaryParts,
   buildCaseSummaryPrompt,
+  composeVerdict,
   hashCaseSummaryInputs,
   isCaseSummaryCurrent,
   parseCaseSummaryResponse,
@@ -129,14 +135,20 @@ function codeSdkReport(overrides: Partial<TestCaseRun> = {}): TestCaseRun {
   });
 }
 
-function llmReply(parts: { asked: string; agent: string; verdict: string }, wrap = (s: string) => s) {
-  return { output: { message: { content: [{ text: wrap(JSON.stringify(parts)) }] } } };
+function llmReply(reply: { asked: string; agent: string; why: string }, wrap = (s: string) => s) {
+  return { output: { message: { content: [{ text: wrap(JSON.stringify(reply)) }] } } };
 }
 
-const GOOD_PARTS = {
+const GOOD_REPLY = {
   asked: 'The test asked the agent to find why checkout returns 500s since the 14:00 deploy.',
   agent: 'The agent searched logs and deployments, found the null dereference in DiscountCodeHandler and recommended a rollback.',
-  verdict: 'PASSED — the judge found both expected outcomes met.',
+  why: 'both expected outcomes were met and the rollback target was correct',
+};
+/** What the stored parts look like for GOOD_REPLY on the passed report (verdict label is composed server-side). */
+const GOOD_PARTS = {
+  asked: GOOD_REPLY.asked,
+  agent: GOOD_REPLY.agent,
+  verdict: 'Judge verdict: PASSED (score 90%) — both expected outcomes were met and the rollback target was correct.',
 };
 
 describe('caseSummaryService — inputs builder', () => {
@@ -176,27 +188,70 @@ describe('caseSummaryService — inputs builder', () => {
     expect(inputs.notJudged).toEqual({ stage: 'pending', cause: 'judgement in progress' });
   });
 
-  it('falls back to the current version content when the test case has no top-level prompt', () => {
+  it('summarises the test-case VERSION the report ran against, not the edited current one', () => {
     const tc = testCase({
-      initialPrompt: undefined,
-      expectedOutcomes: undefined,
+      initialPrompt: 'new prompt',
+      expectedOutcomes: ['new outcome'],
       currentVersion: 2,
       versions: [
-        { version: 1, createdAt: '', initialPrompt: 'old prompt', expectedOutcomes: ['old'], context: [] } as any,
+        { version: 1, createdAt: '', initialPrompt: 'old prompt', expectedOutcomes: ['old outcome'], context: [] } as any,
         { version: 2, createdAt: '', initialPrompt: 'new prompt', expectedOutcomes: ['new outcome'], context: [] } as any,
       ],
     });
-    const inputs = buildCaseSummaryInputs(passedReport(), tc);
-    expect(inputs.prompt).toBe('new prompt');
-    expect(inputs.expectedOutcomes).toEqual(['new outcome']);
+    const ranV1 = buildCaseSummaryInputs(passedReport({ testCaseVersion: 1 }), tc);
+    expect(ranV1.prompt).toBe('old prompt');
+    expect(ranV1.expectedOutcomes).toEqual(['old outcome']);
+    // No version on the report (older runs) → current content.
+    const unknown = buildCaseSummaryInputs(passedReport(), tc);
+    expect(unknown.prompt).toBe('new prompt');
+    expect(unknown.expectedOutcomes).toEqual(['new outcome']);
+    // Different content → different cache key.
+    expect(hashCaseSummaryInputs(ranV1)).not.toBe(hashCaseSummaryInputs(unknown));
+  });
+
+  it('final answer is the last response/assistant step — never a tool result or thinking', () => {
+    const inputs = buildCaseSummaryInputs(passedReport({
+      trajectory: [
+        { id: 's1', type: 'response', content: 'Early draft answer.', timestamp: 1 } as any,
+        { id: 's2', type: 'thinking', content: 'Let me double check…', timestamp: 2 } as any,
+        { id: 's3', type: 'tool_result', content: 'raw tool payload', timestamp: 3 } as any,
+      ],
+    }), testCase());
+    expect(inputs.finalAnswer).toBe('Early draft answer.');
+    expect(buildCaseSummaryInputs(passedReport({ trajectory: [{ id: 's1', type: 'tool_result', content: 'only a tool result', timestamp: 1 } as any] }), testCase()).finalAnswer).toBe('');
+  });
+
+  it('the fingerprint notices changes beyond the truncation boundary and re-judges that reproduce the same text', () => {
+    const tc = testCase();
+    const base = passedReport({ llmJudgeReasoning: 'x'.repeat(3000) });
+    const changedPastLimit = passedReport({ llmJudgeReasoning: 'x'.repeat(2999) + 'y' });
+    const a = buildCaseSummaryInputs(base, tc);
+    const b = buildCaseSummaryInputs(changedPastLimit, tc);
+    expect(a.reasoning).toBe(b.reasoning); // truncated copies are identical…
+    expect(hashCaseSummaryInputs(a)).not.toBe(hashCaseSummaryInputs(b)); // …the cache key still differs
+    const retried = buildCaseSummaryInputs(passedReport({ judgementRetriedAt: '2026-02-01T00:00:00Z', judgementRetryCount: 1 }), tc);
+    expect(hashCaseSummaryInputs(retried)).not.toBe(hashCaseSummaryInputs(buildCaseSummaryInputs(passedReport(), tc)));
+  });
+
+  it('bounds every short field (names, tools, model ids) too', () => {
+    const inputs = buildCaseSummaryInputs(passedReport({
+      agentName: 'A'.repeat(1000),
+      judgeModel: 'M'.repeat(1000),
+      trajectory: [{ id: 's1', type: 'action', toolName: 'T'.repeat(1000), timestamp: 1 } as any],
+    }), testCase({ name: 'N'.repeat(1000) }));
+    for (const v of [inputs.agentName, inputs.judgeModel!, inputs.toolsUsed[0], inputs.testCaseName]) {
+      expect(v.length).toBeLessThanOrEqual(CASE_SUMMARY_LIMITS.short);
+    }
   });
 
   it('collects per-check verdicts from matcherResults and drops the judge model for judge-less code-SDK reports', () => {
     const inputs = buildCaseSummaryInputs(codeSdkReport(), testCase());
+    // Failures first, so a truncated list keeps the "why".
     expect(inputs.checks).toEqual([
-      { description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion' },
       { description: 'result to have called tool search', pass: false, method: 'code-assertion', errorMessage: 'expected search, got none' },
+      { description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion' },
     ]);
+    expect(inputs.checksTotal).toEqual({ total: 2, passed: 1, failed: 1, errored: 0 });
     expect(inputs.judgeModel).toBeUndefined();
     expect(inputs.reasoning).toBe('');
   });
@@ -215,7 +270,7 @@ describe('caseSummaryService — deterministic fallback', () => {
     expect(parts.asked).toMatch(/It has 2 expected outcomes, e\.g\. “Identifies the null pointer in the discount handler”\./);
     expect(parts.agent).toMatch(/^Ops RCA agent used tools search_logs, get_deployments and answered: “Root cause: build 8812/);
     expect(parts.verdict).toMatch(/^Judge verdict: PASSED \(score 90%\) — The agent traced the 500s/);
-    // Each part is one sentence-ish and ends with punctuation.
+    // Each part ends with punctuation.
     for (const s of Object.values(parts)) expect(s).toMatch(/[.!?…”]$/);
   });
 
@@ -234,7 +289,7 @@ describe('caseSummaryService — deterministic fallback', () => {
 
   it('code-SDK report with no judge reasoning: the verdict sentence explains itself from the checks', () => {
     const failed = buildFallbackSummaryParts(buildCaseSummaryInputs(codeSdkReport(), testCase()));
-    expect(failed.verdict).toBe("Verdict: FAILED — 1 of 2 checks failed, e.g. result to have called tool search.");
+    expect(failed.verdict).toBe("Verdict: FAILED — 1 failed of 2 checks, e.g. result to have called tool search.");
     const passed = buildFallbackSummaryParts(buildCaseSummaryInputs(codeSdkReport({
       passFailStatus: 'passed',
       matcherResults: [{ description: "[ …(3) ] to include 'doc-a'", pass: true, method: 'code-assertion' } as any],
@@ -242,11 +297,28 @@ describe('caseSummaryService — deterministic fallback', () => {
     expect(passed.verdict).toBe("Verdict: PASSED — all 1 check passed ([ …(3) ] to include 'doc-a').");
   });
 
+  it('never says "all checks passed" when the list was truncated and a later check failed or errored', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ description: `check ${i}`, pass: true, method: 'code-assertion' }));
+    many[11] = { description: 'check 11', pass: false, method: 'code-assertion' };
+    const errored = buildFallbackSummaryParts(buildCaseSummaryInputs(codeSdkReport({
+      matcherResults: [...many, { description: 'trace check', pass: false, errored: true, method: 'trace-check', errorMessage: 'no spans' }] as any,
+    }), testCase()));
+    expect(errored.verdict).toBe('Verdict: FAILED — 1 failed, 1 errored of 13 checks, e.g. check 11.');
+    expect(errored.verdict).not.toMatch(/all .* passed/);
+  });
+
+  it('composeVerdict: the label always comes from the report; the model only supplies the reason', () => {
+    const passed = buildCaseSummaryInputs(passedReport(), testCase());
+    expect(composeVerdict(passed, 'FAILED because it did nothing right.')).toBe('Judge verdict: PASSED (score 90%) — FAILED because it did nothing right.');
+    // (…the wrong word can appear in the reason, but the label is authoritative and first.)
+    expect(composeVerdict(buildCaseSummaryInputs(agentErrorReport(), testCase()), 'PASSED with flying colours')).toMatch(/^Not judged: the agent request failed — Agent request timed out/);
+    expect(composeVerdict(buildCaseSummaryInputs(judgeErrorReport(), testCase()), '')).toMatch(/^Not judged: the judge could not produce a verdict/);
+  });
+
   it('attaches the model error and marks source=fallback', () => {
     const s = buildFallbackSummary(buildCaseSummaryInputs(passedReport(), testCase()), 'boom');
     expect(s.source).toBe('fallback');
     expect(s.error).toBe('boom');
-    expect(s.text).toBe(`${s.parts.asked} ${s.parts.agent} ${s.parts.verdict}`);
     expect(s.inputsHash).toHaveLength(16);
   });
 });
@@ -254,30 +326,46 @@ describe('caseSummaryService — deterministic fallback', () => {
 describe('caseSummaryService — prompt + parser', () => {
   it('prompt carries the bounded fields and tells the model when the run was not judged', () => {
     const judged = buildCaseSummaryPrompt(buildCaseSummaryInputs(passedReport(), testCase()));
-    expect(judged).toContain("the judge's verdict (PASSED)");
-    expect(judged).toContain('final_answer: Root cause: build 8812');
-    expect(judged).toContain('tools_used: search_logs, get_deployments');
+    expect(judged).toContain('its verdict (PASSED)');
+    expect(judged).toContain('"final_answer": "Root cause: build 8812');
+    expect(judged).toContain('"tools_used": [\n  "search_logs",\n  "get_deployments"\n ]');
+    // Untrusted content is fenced as data, and the system prompt says so.
+    expect(judged).toContain('DATA (untrusted, JSON):');
     const notJudged = buildCaseSummaryPrompt(buildCaseSummaryInputs(agentErrorReport(), testCase()));
     expect(notJudged).toContain('this run was NOT judged');
-    expect(notJudged).toContain('not_judged_reason: stage=agent');
-    expect(notJudged).not.toContain('judge_reasoning:');
+    expect(notJudged).toContain('"not_judged_reason": "stage=agent;');
+    expect(notJudged).not.toContain('judge_reasoning');
     const code = buildCaseSummaryPrompt(buildCaseSummaryInputs(codeSdkReport(), testCase()));
-    expect(code).toContain('checks (1/2 passed):');
-    expect(code).toContain('  - [FAIL] (code-assertion) result to have called tool search — expected search, got none');
-    expect(code).not.toContain('judge_model:');
+    expect(code).toContain('"checks_total": {\n  "total": 2,\n  "passed": 1,\n  "failed": 1,\n  "errored": 0\n }');
+    expect(code).toContain('[FAIL] (code-assertion) result to have called tool search — expected search, got none');
+    expect(code).not.toContain('judge_model');
+    expect(code).not.toContain('checks_note');
+    const truncated = buildCaseSummaryPrompt(buildCaseSummaryInputs(codeSdkReport({
+      matcherResults: Array.from({ length: 20 }, (_, i) => ({ description: `c${i}`, pass: true, method: 'code-assertion' })) as any,
+    }), testCase()));
+    expect(truncated).toContain('only 8 of 20 checks listed');
   });
 
   it('parses plain JSON, fenced JSON, JSON with prose around it, and trailing commas', () => {
-    const json = JSON.stringify(GOOD_PARTS);
-    expect(parseCaseSummaryResponse(json)).toEqual(GOOD_PARTS);
-    expect(parseCaseSummaryResponse('```json\n' + json + '\n```')).toEqual(GOOD_PARTS);
-    expect(parseCaseSummaryResponse('Here you go:\n' + json + '\nHope this helps.')).toEqual(GOOD_PARTS);
-    expect(parseCaseSummaryResponse(json.replace(/}$/, ',\n}'))).toEqual(GOOD_PARTS);
+    const json = JSON.stringify(GOOD_REPLY);
+    expect(parseCaseSummaryResponse(json)).toEqual(GOOD_REPLY);
+    expect(parseCaseSummaryResponse('```json\n' + json + '\n```')).toEqual(GOOD_REPLY);
+    expect(parseCaseSummaryResponse('Here you go:\n' + json + '\nHope this helps.')).toEqual(GOOD_REPLY);
+    expect(parseCaseSummaryResponse(json.replace(/}$/, ',\n}'))).toEqual(GOOD_REPLY);
   });
 
-  it('rejects replies without the three keys', () => {
+  it('caps each part to one line of bounded length', () => {
+    const long = { asked: 'a\n\nb   c ' + 'x'.repeat(2000), agent: 'ok', why: 'fine' };
+    const parsed = parseCaseSummaryResponse(JSON.stringify(long));
+    expect(parsed.asked.startsWith('a b c xxx')).toBe(true);
+    expect(parsed.asked.length).toBeLessThanOrEqual(CASE_SUMMARY_LIMITS.part);
+  });
+
+  it('rejects replies without the three keys, non-objects and broken JSON (no regex guessing)', () => {
     expect(() => parseCaseSummaryResponse('no json here')).toThrow(/no JSON object/);
-    expect(() => parseCaseSummaryResponse('{"asked": "a"}')).toThrow(/missing asked\/agent\/verdict/);
+    expect(() => parseCaseSummaryResponse('{"asked": "a"}')).toThrow(/missing asked\/agent\/why/);
+    expect(() => parseCaseSummaryResponse('{"asked": "He said "hi"", "agent": "x", "why": "y"}')).toThrow();
+    expect(() => parseCaseSummaryResponse('{"asked": "a", "agent": ["b"], "why": "c"}')).toThrow(/missing asked\/agent\/why/);
   });
 });
 
@@ -288,7 +376,7 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
   });
 
   it('calls the model once, persists the summary with the inputs hash, and reuses it while inputs are unchanged', async () => {
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const persist = jest.fn().mockResolvedValue(undefined);
     const report = passedReport();
     const tc = testCase();
@@ -309,7 +397,7 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
   });
 
   it('regenerates when the judgement changed (re-judge) even though a summary is cached', async () => {
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const tc = testCase();
     const report = passedReport();
     const { summary } = await generateCaseSummary(report, tc, {});
@@ -323,12 +411,11 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     };
     expect(isCaseSummaryCurrent(summary, buildCaseSummaryInputs(rejudged, tc))).toBe(false);
 
-    const newParts = { ...GOOD_PARTS, verdict: 'FAILED — the rollback target was wrong.' };
-    mockSend.mockResolvedValueOnce(llmReply(newParts));
+    mockSend.mockResolvedValueOnce(llmReply({ ...GOOD_REPLY, why: 'the rollback target was wrong' }));
     const persist = jest.fn().mockResolvedValue(undefined);
     const again = await generateCaseSummary(rejudged, tc, { persist });
     expect(again.cached).toBe(false);
-    expect(again.summary.parts.verdict).toBe(newParts.verdict);
+    expect(again.summary.parts.verdict).toBe('Judge verdict: FAILED (score 90%) — the rollback target was wrong.');
     expect(again.summary.inputsHash).not.toBe(summary.inputsHash);
     expect(persist).toHaveBeenCalledTimes(1);
     expect(mockSend).toHaveBeenCalledTimes(2);
@@ -342,27 +429,64 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     const a = generateCaseSummary(report, testCase(), { persist });
     const b = generateCaseSummary(report, testCase(), { persist });
     // A different report must NOT be coalesced with them.
-    mockSend.mockResolvedValueOnce(llmReply({ ...GOOD_PARTS, asked: 'other' }));
+    mockSend.mockResolvedValueOnce(llmReply({ ...GOOD_REPLY, asked: 'other' }));
     const c = generateCaseSummary(passedReport({ id: 'report-other' }), testCase(), { persist });
-    resolveSend(llmReply(GOOD_PARTS));
+    resolveSend(llmReply(GOOD_REPLY));
     const [ra, rb, rc] = await Promise.all([a, b, c]);
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(ra.summary).toEqual(rb.summary);
     expect(rc.summary.parts.asked).toBe('other');
     expect(persist).toHaveBeenCalledTimes(2); // once per distinct generation
     // Once settled, the next call for the same report starts a new generation.
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     await generateCaseSummary(report, testCase(), {});
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
-  it('force=true bypasses a current cache', async () => {
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+  it('force=true bypasses a current cache but still joins a generation already running for the same inputs', async () => {
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const report = passedReport();
     const { summary } = await generateCaseSummary(report, testCase(), {});
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
-    const forced = await generateCaseSummary({ ...report, caseSummary: summary }, testCase(), { force: true });
-    expect(forced.cached).toBe(false);
+    let resolveSend!: (v: any) => void;
+    mockSend.mockImplementationOnce(() => new Promise((r) => { resolveSend = r; }));
+    const forcedA = generateCaseSummary({ ...report, caseSummary: summary }, testCase(), { force: true });
+    const forcedB = generateCaseSummary({ ...report, caseSummary: summary }, testCase(), { force: true });
+    resolveSend(llmReply(GOOD_REPLY));
+    const [a, b] = await Promise.all([forcedA, forcedB]);
+    expect(a.cached).toBe(false);
+    expect(b.cached).toBe(false);
+    expect(mockSend).toHaveBeenCalledTimes(2); // 1 initial + 1 shared forced regeneration
+  });
+
+  it('the model cannot flip the verdict: a "PASSED" reason on a failed report still reads FAILED; an unjudged run stays "Not judged"', async () => {
+    mockSend.mockResolvedValueOnce(llmReply({ ...GOOD_REPLY, why: 'PASSED — everything was perfect' }));
+    const failed = await generateCaseSummary(passedReport({ passFailStatus: 'failed' }), testCase(), {});
+    expect(failed.summary.parts.verdict).toMatch(/^Judge verdict: FAILED \(score 90%\) — PASSED — everything was perfect\.$/);
+    mockSend.mockResolvedValueOnce(llmReply({ ...GOOD_REPLY, why: 'the agent passed' }));
+    const unjudged = await generateCaseSummary(agentErrorReport(), testCase(), {});
+    expect(unjudged.summary.source).toBe('llm');
+    expect(unjudged.summary.parts.verdict).toMatch(/^Not judged: the agent request failed — Agent request timed out/);
+    expect(unjudged.summary.parts.verdict).not.toMatch(/passed/i);
+  });
+
+  it('a stuck downstream step (persist never settles) is released at the outer deadline instead of wedging the in-flight slot', async () => {
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.useFakeTimers();
+    try {
+      const pending = generateCaseSummary(passedReport(), testCase(), { timeoutMs: 50, persist: () => new Promise(() => {}) });
+      await jest.advanceTimersByTimeAsync(50 + 10_000 + 1);
+      const res = await pending;
+      expect(res.summary.source).toBe('fallback');
+      expect(res.summary.error).toMatch(/did not finish within/);
+    } finally {
+      jest.useRealTimers();
+      warn.mockRestore();
+    }
+    // The slot is free again: the next call starts a fresh generation.
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    const next = await generateCaseSummary(passedReport(), testCase(), {});
+    expect(next.summary.source).toBe('llm');
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
@@ -407,8 +531,18 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     expect(res.summary.error).toMatch(/no JSON object/);
   });
 
+  it('a model id that cannot be resolved still yields the fallback, not an exception', async () => {
+    const { resolveRegionAwareModelId } = jest.requireMock('@/lib/bedrockCompat');
+    (resolveRegionAwareModelId as jest.Mock).mockImplementationOnce(() => { throw new Error('bad region config'); });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await generateCaseSummary(passedReport(), testCase(), {});
+    warn.mockRestore();
+    expect(res.summary.source).toBe('fallback');
+    expect(res.summary.error).toBe('bad region config');
+  });
+
   it('a persistence failure does not hide a good summary', async () => {
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await generateCaseSummary(passedReport(), testCase(), { persist: async () => { throw new Error('disk full'); } });
     warn.mockRestore();
@@ -417,14 +551,14 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
   });
 
   it('wires the Bedrock client with the refreshing credential provider and passes the abort signal (#569)', async () => {
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     await generateCaseSummary(passedReport(), testCase(), {});
     expect(createRefreshingCredentialProvider).toHaveBeenCalled();
     expect(mockClientCtor).toHaveBeenCalledTimes(1);
     expect(mockClientCtor.mock.calls[0][0]).toMatchObject({ credentials: mockCredentialProvider });
     expect(mockSend.mock.calls[0][1]).toHaveProperty('abortSignal');
     // One long-lived client across calls (the provider's refresh state lives in it).
-    mockSend.mockResolvedValueOnce(llmReply(GOOD_PARTS));
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     await generateCaseSummary(passedReport({ id: 'report-2' }), testCase(), {});
     expect(mockClientCtor).toHaveBeenCalledTimes(1);
   });

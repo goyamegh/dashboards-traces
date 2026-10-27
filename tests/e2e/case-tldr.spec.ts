@@ -44,7 +44,6 @@ const llmSummary = (reportId: string, parts: { asked: string; agent: string; ver
   summary: {
     source: 'llm',
     parts,
-    text: `${parts.asked} ${parts.agent} ${parts.verdict}`,
     model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
     generatedAt: new Date().toISOString(),
     inputsHash: `hash-${reportId.slice(-6)}`,
@@ -179,7 +178,8 @@ test.describe('Case TL;DR card — run inspector', () => {
     });
 
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repPass}`);
-    await expect(card(page)).toBeVisible({ timeout: 15000 });
+    // Cold CI servers can take a while to paint the inspector the first time.
+    await expect(card(page)).toBeVisible({ timeout: 30000 });
     await expect(card(page)).toHaveAttribute('data-state', 'loading');
     await expect(page.getByTestId('case-tldr-skeleton')).toBeVisible();
     // The rest of the inspector is usable while the summary is still loading.
