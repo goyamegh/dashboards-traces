@@ -63,6 +63,9 @@ describe('validateDeterministicEvaluator', () => {
     ['pattern with two groups', { ...valid(), inputs: { gold: { source: 'expectedOutcomes-pattern', pattern: '(a)(b)' }, prediction: { source: 'tool-hits-ordered' } } }, /found 2/],
     ['missing prediction', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' } } }, /prediction is required/],
     ['unknown prediction source', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'report.output' } } }, /prediction.source must be 'tool-hits-ordered'/],
+    ['response-results: path not a string', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'response-results', path: 3 } } }, /prediction.path must be a non-empty string/],
+    ['response-results: empty idField', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'response-results', idField: ' ' } } }, /prediction.idField must be a non-empty string/],
+    ['response-results: bad rankField', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'response-results', rankField: [] } } }, /prediction.rankField must be a non-empty string/],
     ['bad idFields', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered', idFields: 'id' } } }, /idFields must be an array/],
     ['bad hitsPaths', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered', hitsPaths: [1] } } }, /hitsPaths must be an array/],
     ['bad anchorTools', { ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered', anchorTools: 'x' } } }, /anchorTools must be an array/],
@@ -71,6 +74,41 @@ describe('validateDeterministicEvaluator', () => {
     const errors = validateDeterministicEvaluator(doc);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.join('\n')).toMatch(re);
+  });
+});
+
+describe('validateDeterministicEvaluator — response-results source and abstain metric', () => {
+  it('accepts response-results with optional path / idField / rankField and an abstain metric', () => {
+    const doc = {
+      ...valid(),
+      metrics: [
+        { name: 'hit@5', compute: { type: 'ranked-hit', k: 5 }, weight: 1, primary: true },
+        { name: 'abstain', compute: { type: 'abstain' }, weight: 1 },
+      ],
+      passPolicy: { kind: 'gates', gates: [{ metric: 'hit@5', min: 1 }, { metric: 'abstain', min: 1 }] },
+      inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'response-results', path: 'data.results', idField: 'doc_id', rankField: 'rank' } },
+    };
+    expect(validateDeterministicEvaluator(doc)).toEqual([]);
+    expect(validateDeterministicEvaluator({ ...doc, inputs: { ...doc.inputs, prediction: { source: 'response-results' } } })).toEqual([]);
+    const n = normalizeDeterministicEvaluator(doc);
+    expect(n.metrics[1]).toEqual({ name: 'abstain', compute: { type: 'abstain' }, weight: 1, scale: { min: 0, max: 1 }, primary: false });
+    expect(n.scoringConfig.metrics[1]).toEqual({ name: 'abstain', description: 'abstain', weight: 1, scale: 1 });
+    expect(n.inputs.prediction).toEqual({ source: 'response-results', path: 'data.results', idField: 'doc_id', rankField: 'rank' });
+  });
+
+  it("rejects an 'abstain' metric with tool-hits-ordered (that extractor cannot observe an abstention)", () => {
+    const errors = validateDeterministicEvaluator({
+      ...valid(),
+      metrics: [{ name: 'abstain', compute: { type: 'abstain' }, weight: 1 }],
+      passPolicy: { kind: 'threshold', minScore: 1 },
+      inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered' } },
+    });
+    expect(errors).toEqual(["an 'abstain' metric requires inputs.prediction.source 'response-results' (tool-hits-ordered cannot observe an abstention)"]);
+  });
+
+  it('the error for an unknown prediction source names both sources', () => {
+    const errors = validateDeterministicEvaluator({ ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'nope' } } });
+    expect(errors.join('\n')).toMatch(/must be 'tool-hits-ordered' or 'response-results' \(got "nope"\)/);
   });
 });
 
