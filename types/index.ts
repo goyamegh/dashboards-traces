@@ -897,6 +897,41 @@ export interface TestCaseRun {
   judgementRetriedAt?: string;
   /** How many times the judgement was retried (1 on the first retry). */
   judgementRetryCount?: number;
+  /**
+   * Cached TL;DR of this run (see {@link CaseSummary}), written lazily by
+   * `POST /api/storage/runs/:id/summary` on first view. Only LLM-written
+   * summaries are persisted; `inputsHash` ties the text to the exact prompt /
+   * answer / judgement it was written from, so a re-judge invalidates it.
+   */
+  caseSummary?: CaseSummary;
+}
+
+/** The three sentences of a case TL;DR: what was asked → what the agent did → the judgement. */
+export interface CaseSummaryParts {
+  asked: string;
+  agent: string;
+  verdict: string;
+}
+
+/**
+ * A 3-sentence plain-language summary of one test-case run, shown above the
+ * Test Case Definition in the run inspector. `source: 'llm'` = written by the
+ * summary model and cached on the report; `source: 'fallback'` = deterministic
+ * field-based text returned when the model was unavailable (`error` says
+ * why) — never persisted, so the next view tries the model again.
+ */
+export interface CaseSummary {
+  source: 'llm' | 'fallback';
+  parts: CaseSummaryParts;
+  /** `parts` joined into one paragraph. */
+  text: string;
+  /** Resolved model id for `source: 'llm'`. */
+  model?: string;
+  generatedAt: string;
+  /** Short hash of the inputs the summary was built from (cache key). */
+  inputsHash: string;
+  /** Why the model summary was unavailable (fallback only). */
+  error?: string;
 }
 
 // Alias for backwards compatibility during migration

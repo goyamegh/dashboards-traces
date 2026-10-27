@@ -14,6 +14,7 @@ import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '../../adapters/index.js';
 import { refreshBenchmarkRunStatsByReportId } from '../../services/benchmarkRunStats.js';
+import { generateCaseSummary } from '../../services/caseSummaryService.js';
 import {
   SAMPLE_RUNS,
   getSampleRun,
@@ -542,6 +543,39 @@ router.get('/api/storage/runs/iterations/:benchmarkId/:testCaseId', async (req: 
     });
   } catch (error: any) {
     console.error('[StorageAPI] Get iterations failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/storage/runs/:id/summary - Case TL;DR (lazy, cached on the report)
+//
+// Body: { force?: boolean }. Returns { summary: CaseSummary, cached: boolean }.
+// The summary is regenerated whenever its inputs hash (prompt / answer /
+// judgement) no longer matches the cached one — i.e. after Retry judgement —
+// and never blocks on a dead model: the fallback is field-based text with
+// `source: 'fallback'` + `error`. Sample (demo-*) reports are summarised but
+// never written to.
+router.post('/api/storage/runs/:id/summary', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const force = req.body?.force === true;
+    const storage = getStorageModule();
+    const report = isSampleId(id) ? getSampleRun(id) : await storage.runs.getById(id);
+    if (!report) {
+      return res.status(404).json({ error: 'Run not found' });
+    }
+    const testCase = report.testCaseId
+      ? await storage.testCases.getById(report.testCaseId).catch(() => null)
+      : null;
+    const result = await generateCaseSummary(report as TestCaseRun, testCase, {
+      force,
+      persist: isSampleId(id)
+        ? undefined
+        : (summary) => storage.runs.update(id, { caseSummary: summary } as Partial<TestCaseRun>),
+    });
+    res.json(result);
+  } catch (error: any) {
+    console.error('[StorageAPI] Case summary failed:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

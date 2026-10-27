@@ -1,0 +1,293 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * Integration test: `POST /api/storage/runs/:id/summary` (case TL;DR).
+ *
+ * Mounts the REAL runs + test-cases routers on the REAL FileStorageModule
+ * (isolated data dir) and drives the REAL AWS SDK + REAL refreshing credential
+ * provider: `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` (a standard SDK setting) points
+ * the Bedrock Runtime client at a local verifying HTTP/2 server, and fake env
+ * credentials are what the provider chain must resolve. Nothing on the
+ * summary path is mocked — the local endpoint asserts that each request is
+ * SigV4-signed with the credential the provider resolved, which is the
+ * wiring the repo's #569 rule is about.
+ *
+ * Scenario (one report, in order):
+ *   1. first view     → model called once, `source: 'llm'`, persisted on the report
+ *   2. second view    → `cached: true`, no model call
+ *   3. re-judge (PATCH verdict + reasoning) → hash mismatch → model called again, new text persisted
+ *   4. model 500s     → `source: 'fallback'` + error text; the persisted LLM summary is left untouched
+ *   5. model hangs    → timeout → fallback says so
+ *   6. unknown report → 404
+ *
+ * Run:
+ *   npm run test:integration -- --testPathPattern=caseSummary.integration
+ */
+
+import express from 'express';
+import request from 'supertest';
+import http2 from 'node:http2';
+import { rmSync } from 'node:fs';
+import path from 'node:path';
+
+jest.mock('@/lib/debug', () => ({ debug: jest.fn() }));
+
+const DATA_DIR = path.join(process.cwd(), '.agent-health-test-data', `caseSummary-${process.pid}`);
+const FAKE_KEY_ID = 'AKIACASESUMMARYTEST1';
+
+type FakeMode = 'ok' | 'error' | 'hang';
+
+interface FakeBedrock {
+  server: http2.Http2Server;
+  url: string;
+  mode: FakeMode;
+  calls: Array<{ authorization: string; modelPath: string; body: any }>;
+  nextParts: { asked: string; agent: string; verdict: string };
+}
+
+function startFakeBedrock(): Promise<FakeBedrock> {
+  const fake: FakeBedrock = {
+    server: undefined as any,
+    url: '',
+    mode: 'ok',
+    calls: [],
+    nextParts: { asked: 'a', agent: 'b', verdict: 'c' },
+  };
+  // The Bedrock Runtime client's default request handler is HTTP/2
+  // (NodeHttp2Handler) — a plain-h2c http2 server is what it will dial.
+  fake.server = http2.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      let body: any = null;
+      try { body = JSON.parse(raw); } catch { /* keep null */ }
+      fake.calls.push({ authorization: String(req.headers.authorization || ''), modelPath: req.headers[':path'] as string || req.url || '', body });
+      if (fake.mode === 'hang') return; // never answer; the service's abort must fire
+      if (fake.mode === 'error') {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'fake bedrock is down' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        output: { message: { role: 'assistant', content: [{ text: JSON.stringify(fake.nextParts) }] } },
+        stopReason: 'end_turn',
+        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+        metrics: { latencyMs: 5 },
+      }));
+    });
+  });
+  return new Promise((resolve) => {
+    fake.server.listen(0, '127.0.0.1', () => {
+      const port = (fake.server.address() as any).port;
+      fake.url = `http://127.0.0.1:${port}`;
+      resolve(fake);
+    });
+  });
+}
+
+describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real SDK + credential provider)', () => {
+  const ORIGINAL_ENV = { ...process.env };
+  let app: express.Express;
+  let fake: FakeBedrock;
+  let tcId: string;
+  let reportId: string;
+
+  beforeAll(async () => {
+    fake = await startFakeBedrock();
+    process.env.AGENT_HEALTH_DATA_DIR = DATA_DIR;
+    // Real SDK config: custom endpoint + static env credentials (the
+    // refreshing provider resolves these through fromNodeProviderChain).
+    process.env.AWS_ENDPOINT_URL_BEDROCK_RUNTIME = fake.url;
+    process.env.AWS_ACCESS_KEY_ID = FAKE_KEY_ID;
+    process.env.AWS_SECRET_ACCESS_KEY = 'case-summary-test-secret';
+    delete process.env.AWS_SESSION_TOKEN;
+    delete process.env.AWS_PROFILE;
+    process.env.AWS_REGION = 'us-west-2';
+    process.env.CASE_SUMMARY_TIMEOUT_MS = '1500';
+    // Keep the SDK from spending its retry budget on the 500 / hang cases.
+    process.env.AWS_MAX_ATTEMPTS = '1';
+
+    const runRoutes = (await import('@/server/routes/storage/runs')).default;
+    const testCaseRoutes = (await import('@/server/routes/storage/testCases')).default;
+    app = express();
+    app.use(express.json({ limit: '5mb' }));
+    app.use(runRoutes);
+    app.use(testCaseRoutes);
+
+    const tc = await request(app).post('/api/storage/test-cases').send({
+      name: `ahtest-case-summary-${Date.now()}`,
+      category: 'Test',
+      difficulty: 'Easy',
+      initialPrompt: 'Why does the nightly report job fail after the 02:00 rotation?',
+      expectedOutcomes: ['Finds the expired token in the scheduler config', 'Suggests rotating the token automatically'],
+    });
+    expect([200, 201]).toContain(tc.status);
+    tcId = tc.body.id || tc.body.testCase?.id;
+    expect(tcId).toBeTruthy();
+
+    const rep = await request(app).post('/api/storage/runs').send({
+      testCaseId: tcId,
+      agentName: 'Example ops agent',
+      modelName: 'demo-model',
+      status: 'completed',
+      metricsStatus: 'ready',
+      passFailStatus: 'passed',
+      score: 0.85,
+      trajectory: [
+        { id: 's1', type: 'action', toolName: 'read_config', toolArgs: { path: 'scheduler.yaml' }, timestamp: 1 },
+        { id: 's2', type: 'tool_result', content: 'token_expires_at: 02:00', timestamp: 2 },
+        { id: 's3', type: 'response', content: 'The scheduler token expires at 02:00; rotate it automatically before the job.', timestamp: 3 },
+      ],
+      llmJudgeReasoning: 'The agent found the expired scheduler token and proposed automatic rotation; both outcomes met.',
+      metrics: { accuracy: 90, faithfulness: 88, latency_score: 80, trajectory_alignment_score: 85 },
+    });
+    expect(rep.status).toBe(201);
+    reportId = rep.body.id;
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      if (reportId) await request(app).delete(`/api/storage/runs/${reportId}`);
+      if (tcId) await request(app).delete(`/api/storage/test-cases/${tcId}`);
+    } catch { /* best-effort */ }
+    await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('1) first view: calls the model once through a SigV4-signed request and persists the LLM summary', async () => {
+    fake.mode = 'ok';
+    fake.nextParts = {
+      asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
+      agent: 'The agent read the scheduler config and found the token expiring at 02:00, proposing automatic rotation.',
+      verdict: 'PASSED — both expected outcomes were met.',
+    };
+    const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.cached).toBe(false);
+    expect(res.body.summary.source).toBe('llm');
+    expect(res.body.summary.parts).toEqual(fake.nextParts);
+    expect(res.body.summary.inputsHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(res.body.summary.model).toMatch(/anthropic\.claude/);
+
+    // The REAL SDK signed the request with the credential the REAL provider resolved.
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0].authorization).toMatch(new RegExp(`^AWS4-HMAC-SHA256 Credential=${FAKE_KEY_ID}/\\d{8}/us-west-2/bedrock/aws4_request`));
+    expect(fake.calls[0].modelPath).toMatch(/^\/model\/.+\/converse$/);
+    // The prompt the model saw carried the bounded fields, not the whole report.
+    const userText: string = fake.calls[0].body.messages[0].content[0].text;
+    expect(userText).toContain('prompt: Why does the nightly report job fail');
+    expect(userText).toContain('tools_used: read_config');
+    expect(userText).toContain("verdict: passed");
+
+    const stored = await request(app).get(`/api/storage/runs/${reportId}`);
+    expect(stored.body.caseSummary).toEqual(res.body.summary);
+  });
+
+  it('1b) two concurrent first views of a fresh report share ONE model call', async () => {
+    const rep = await request(app).post('/api/storage/runs').send({
+      testCaseId: tcId, agentName: 'Example ops agent', modelName: 'demo-model',
+      status: 'completed', metricsStatus: 'ready', passFailStatus: 'passed',
+      trajectory: [{ id: 's1', type: 'response', content: 'Rotate the token.', timestamp: 1 }],
+      llmJudgeReasoning: 'Fine.', metrics: { accuracy: 90, faithfulness: 90, latency_score: 90, trajectory_alignment_score: 90 },
+    });
+    expect(rep.status).toBe(201);
+    const id = rep.body.id as string;
+    try {
+      const before = fake.calls.length;
+      const [a, b] = await Promise.all([
+        request(app).post(`/api/storage/runs/${id}/summary`).send({}),
+        request(app).post(`/api/storage/runs/${id}/summary`).send({}),
+      ]);
+      expect(a.status).toBe(200);
+      expect(b.status).toBe(200);
+      expect(a.body.summary).toEqual(b.body.summary);
+      expect(a.body.summary.source).toBe('llm');
+      expect(fake.calls).toHaveLength(before + 1);
+    } finally {
+      await request(app).delete(`/api/storage/runs/${id}`);
+    }
+  });
+
+  it('2) second view: served from the report cache, no model call', async () => {
+    const before = fake.calls.length;
+    const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.cached).toBe(true);
+    expect(res.body.summary.parts).toEqual(fake.nextParts);
+    expect(fake.calls).toHaveLength(before);
+  });
+
+  it('3) after a re-judge the cached summary is stale → regenerated with the new verdict and re-persisted', async () => {
+    const before = fake.calls.length;
+    const prev = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
+
+    const patch = await request(app).patch(`/api/storage/runs/${reportId}`).send({
+      passFailStatus: 'failed',
+      llmJudgeReasoning: 'The agent found the token but its rotation suggestion would run after the job starts.',
+      judgementRetriedAt: new Date().toISOString(),
+      judgementRetryCount: 1,
+    });
+    expect(patch.status).toBe(200);
+
+    fake.nextParts = {
+      asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
+      agent: 'The agent read the scheduler config and found the token expiring at 02:00.',
+      verdict: 'FAILED — the proposed rotation would run after the job starts.',
+    };
+    const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.cached).toBe(false);
+    expect(res.body.summary.source).toBe('llm');
+    expect(res.body.summary.parts.verdict).toBe(fake.nextParts.verdict);
+    expect(res.body.summary.inputsHash).not.toBe(prev.inputsHash);
+    expect(fake.calls).toHaveLength(before + 1);
+    expect(fake.calls[before].body.messages[0].content[0].text).toContain('verdict: failed');
+
+    const stored = await request(app).get(`/api/storage/runs/${reportId}`);
+    expect(stored.body.caseSummary.inputsHash).toBe(res.body.summary.inputsHash);
+    expect(stored.body.caseSummary.parts.verdict).toBe(fake.nextParts.verdict);
+  });
+
+  it('4) model error → honest field-based fallback with the error; the stored LLM summary is untouched', async () => {
+    // Make the cache stale again so the route has to ask the model.
+    await request(app).patch(`/api/storage/runs/${reportId}`).send({ llmJudgeReasoning: 'Rotation timing is wrong; the fix would not prevent the failure.' });
+    const stored = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
+
+    fake.mode = 'error';
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+    warn.mockRestore();
+    expect(res.status).toBe(200);
+    expect(res.body.cached).toBe(false);
+    expect(res.body.summary.source).toBe('fallback');
+    expect(res.body.summary.error).toBeTruthy();
+    expect(res.body.summary.parts.asked).toMatch(/^The test asks: “Why does the nightly report job fail/);
+    expect(res.body.summary.parts.agent).toMatch(/^Example ops agent used the tool read_config and answered: “The scheduler token expires/);
+    expect(res.body.summary.parts.verdict).toMatch(/^Judge verdict: FAILED \(score 85%\) — Rotation timing is wrong/);
+
+    const after = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
+    expect(after).toEqual(stored); // fallbacks are never persisted
+  });
+
+  it('5) model hangs → the request is aborted at the timeout and the fallback says so', async () => {
+    fake.mode = 'hang';
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = Date.now();
+    const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({ force: true });
+    warn.mockRestore();
+    expect(res.status).toBe(200);
+    expect(res.body.summary.source).toBe('fallback');
+    expect(res.body.summary.error).toMatch(/did not answer within 2 s/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 15000);
+
+  it('6) unknown report → 404', async () => {
+    const res = await request(app).post('/api/storage/runs/report-does-not-exist/summary').send({});
+    expect(res.status).toBe(404);
+  });
+});

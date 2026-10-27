@@ -19,6 +19,7 @@ import { type ResultStatus } from './ResultStatus';
 import { getFailureStage } from '@/lib/reportFailure';
 import { getRunDisplayName } from '@/lib/utils';
 import { CollapsibleTestCaseDefinition } from './CollapsibleTestCaseDefinition';
+import { CaseTldrCard } from './CaseTldrCard';
 import type { FullRecordState } from './SdkTestDefinitionView';
 
 interface TestCaseInspectorPanelProps {
@@ -94,6 +95,11 @@ export const TestCaseInspectorPanel: React.FC<TestCaseInspectorPanelProps> = ({
           {report.agentName || '—'} · {report.modelName || '—'}
         </div>
       </div>
+
+      {/* TL;DR — three sentences (asked → agent → verdict) above the
+          definition so a reader gets the whole story of this case before
+          opening the definition or the tabs. Lazy + cached server-side. */}
+      <CaseTldrCard report={report} status={status} />
 
       {/* Reusable definition collapsible — same widget on both
           TestCaseDetailPage and RunInspectorPage so users get the
