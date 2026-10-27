@@ -14,6 +14,7 @@ import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '@/server/adapters';
 import { SYSTEM_EVALUATORS, toEvaluator, isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
+import { validateScoringConfig } from '@/lib/scoring/validateScoringConfig';
 import type { Evaluator, StorageMetadata } from '@/types';
 import {
   isDeterministicEvaluator,
@@ -233,6 +234,16 @@ router.post('/api/storage/evaluators', async (req: Request, res: Response) => {
     if (!evaluator.scoringConfig) {
       return res.status(400).json({ error: 'Evaluator scoring config is required' });
     }
+    // LLM evaluators only: a deterministic body was already validated (and
+    // its scoringConfig mirror synthesized) by prepareEvaluatorBody above,
+    // whose validator is the one that rejects `llm-verdict` for `kind:
+    // 'deterministic'`.
+    if (!isDeterministicEvaluator(evaluator)) {
+      const scoringError = validateScoringConfig(evaluator.scoringConfig);
+      if (scoringError) {
+        return res.status(400).json({ error: scoringError });
+      }
+    }
 
     const storage = getStorageModule();
     const created = await storage.evaluators.create(evaluator);
@@ -264,6 +275,16 @@ router.put('/api/storage/evaluators/:id', async (req: Request, res: Response) =>
     const prepared = prepareEvaluatorBody(merged);
     if (prepared.error) {
       return res.status(400).json({ error: prepared.error });
+    }
+    // LLM evaluators: a scoring change (weights / scale / passPolicy /
+    // primaryMetrics) changes the content hash new reports are stamped with;
+    // reports judged earlier keep their own frozen snapshot untouched. A
+    // deterministic evaluator's scoringConfig is re-synthesized above.
+    if (!isDeterministicEvaluator(merged) && req.body?.scoringConfig !== undefined) {
+      const scoringError = validateScoringConfig(req.body.scoringConfig);
+      if (scoringError) {
+        return res.status(400).json({ error: scoringError });
+      }
     }
     const updates = isDeterministicEvaluator(merged)
       ? {
