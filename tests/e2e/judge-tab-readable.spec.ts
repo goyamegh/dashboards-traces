@@ -157,7 +157,7 @@ test.describe('Judge Evaluation + Test Case Output — readable failure', () => 
     await quietTldr(page);
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${seed!.repJudge}`);
     await page.getByRole('tab', { name: /Judge Evaluation/ }).click();
-    await expect(page.getByTestId('judgement-headline-title')).toContainText('FAILED — recall_cap@10 = 2/min(10, 108) = 0.20 (pass at ≥ 0.8)', { timeout: 15000 });
+    await expect(page.getByTestId('judgement-headline-title')).toContainText('FAILED — evaluate: recall_cap@10: recall_cap@10 = 2/min(10, 108) = 0.20 (pass at ≥ 0.8)', { timeout: 15000 });
     await expect(page.getByTestId('judgement-headline-title')).toContainText('judge: Critical failure: the agent returned only 2 records when the benchmark requires at least 10');
     await expect(page.getByTestId('judgement-headline-how')).toHaveText('Decided by 3 checks — 2 deterministic + 1 LLM judge: 1 passed, 2 failed.');
     const sections = page.getByTestId('judge-reasoning-section');
