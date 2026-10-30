@@ -589,8 +589,11 @@ router.post('/api/storage/runs/:id/summary', async (req: Request, res: Response)
     });
     res.json(result);
   } catch (error: any) {
-    console.error('[StorageAPI] Case summary failed:', error.message);
-    res.status(500).json({ error: error.message });
+    // Log the real cause server-side; the body gets a generic message + a
+    // correlation id (storage / SDK errors can carry hostnames and config).
+    const ref = `cs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    console.error(`[StorageAPI] Case summary failed (${ref}) for ${req.params.id}:`, error?.message || error);
+    res.status(500).json({ error: `Case summary failed (ref ${ref}); see server log` });
   }
 });
 

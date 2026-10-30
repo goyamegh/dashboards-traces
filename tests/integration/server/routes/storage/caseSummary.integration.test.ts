@@ -33,6 +33,7 @@
 
 import express from 'express';
 import request from 'supertest';
+import { apiKeyAuth } from '@/server/middleware/apiKeyAuth';
 import http2 from 'node:http2';
 import { rmSync } from 'node:fs';
 import path from 'node:path';
@@ -128,6 +129,8 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     const testCaseRoutes = (await import('@/server/routes/storage/testCases')).default;
     app = express();
     app.use(express.json({ limit: '5mb' }));
+    // The server's only auth middleware, mounted exactly as server/middleware/index.ts does.
+    app.use(apiKeyAuth);
     app.use(runRoutes);
     app.use(testCaseRoutes);
 
@@ -340,6 +343,39 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     expect(res.body.summary.error).toMatch(/did not answer within 2 s/);
     expect(Date.now() - started).toBeLessThan(10_000);
   }, 15000);
+
+  it('7) CASE_SUMMARY_ENABLED=false: the route never calls the model and says so (opt-out for sending case data)', async () => {
+    fake.mode = 'ok';
+    process.env.CASE_SUMMARY_ENABLED = 'false';
+    try {
+      await request(app).patch(`/api/storage/runs/${reportId}`).send({ llmJudgeReasoning: 'Reasoning v5 — model disabled.' });
+      const before = fake.calls.length;
+      const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({ force: true });
+      expect(res.status).toBe(200);
+      expect(res.body.summary.source).toBe('fallback');
+      expect(res.body.summary.error).toMatch(/disabled \(CASE_SUMMARY_ENABLED=false\)/);
+      expect(res.body.summary.parts.verdict).toMatch(/^Judge verdict: FAILED \(score 85%\) — Reasoning v5/);
+      expect(fake.calls).toHaveLength(before);
+    } finally {
+      delete process.env.CASE_SUMMARY_ENABLED;
+    }
+  });
+
+  it('8) auth coverage: AH_API_KEY protects only /api/coding-agents — /api/storage/runs/:id/summary stays open like every other storage route (documented exposure)', async () => {
+    process.env.AH_API_KEY = 'secret-for-test';
+    try {
+      // Control: the middleware IS active on the routes it was written for.
+      const guarded = await request(app).post('/api/coding-agents/anything').send({});
+      expect(guarded.status).toBe(401);
+      // The summary route: no Bearer token, still answered (same as GET /api/storage/runs/:id).
+      const open = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
+      expect(open.status).toBe(200);
+      const sibling = await request(app).get(`/api/storage/runs/${reportId}`);
+      expect(sibling.status).toBe(200);
+    } finally {
+      delete process.env.AH_API_KEY;
+    }
+  });
 
   it('6) unknown report → 404', async () => {
     const res = await request(app).post('/api/storage/runs/report-does-not-exist/summary').send({});

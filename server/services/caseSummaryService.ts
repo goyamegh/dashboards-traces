@@ -68,6 +68,33 @@ export const CASE_SUMMARY_PROMPT_VERSION = 2;
 export const CASE_SUMMARY_TIMEOUT_MS = Number(process.env.CASE_SUMMARY_TIMEOUT_MS) || 20_000;
 
 /**
+ * Opt-out for sending case data (prompt, answer, judge reasoning) to the
+ * summary model. `CASE_SUMMARY_ENABLED=false|0|off` keeps the TL;DR card but
+ * always serves the deterministic field-based summary — nothing leaves the
+ * server. Read per call so a test / operator can flip it without a restart.
+ */
+export function isCaseSummaryModelEnabled(): boolean {
+  const v = (process.env.CASE_SUMMARY_ENABLED ?? '').trim().toLowerCase();
+  return !(v === 'false' || v === '0' || v === 'off' || v === 'no');
+}
+
+/**
+ * Cost bounding: at most this many model generations in flight per server
+ * process (default 4). Anything beyond gets the field-based summary with an
+ * honest "busy" reason instead of queueing a paid call — the route is
+ * unauthenticated like every other `/api/storage` route, so a burst (many
+ * tabs, a crawler, a scripted loop over reports) must not fan out into
+ * unbounded Bedrock spend.
+ */
+export function getMaxConcurrentGenerations(): number {
+  const n = Number(process.env.CASE_SUMMARY_MAX_CONCURRENT);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 4;
+}
+
+/** A forced regeneration of the same report within this window joins/reuses instead of paying again. */
+export const FORCE_COOLDOWN_MS = Number(process.env.CASE_SUMMARY_FORCE_COOLDOWN_MS) || 10_000;
+
+/**
  * Model used for summaries. Falls back to the judge's default Bedrock model so
  * a working judge setup needs no extra configuration.
  */
@@ -502,8 +529,15 @@ export async function generateCaseSummary(
   const inputs = buildCaseSummaryInputs(report, testCase);
   const inputsHash = hashCaseSummaryInputs(inputs);
 
-  if (!options.force && isCaseSummaryCurrent(report.caseSummary, inputs)) {
+  // A second "Regenerate" within the cooldown is treated as a plain view:
+  // the cached summary (if current) is served, no second paid call.
+  const lastForced = forcedAt.get(report.id);
+  const force = options.force === true && !(lastForced !== undefined && now() - lastForced < FORCE_COOLDOWN_MS);
+  if (!force && isCaseSummaryCurrent(report.caseSummary, inputs)) {
     return { summary: report.caseSummary as CaseSummary, cached: true };
+  }
+  if (!isCaseSummaryModelEnabled()) {
+    return { summary: buildFallbackSummary(inputs, 'model summaries are disabled (CASE_SUMMARY_ENABLED=false)'), cached: false };
   }
 
   // Coalesce concurrent generations of the same (report, inputs): the
@@ -516,6 +550,15 @@ export async function generateCaseSummary(
   if (existing) {
     debug('CaseSummary', `joining in-flight summary for report ${report.id}`);
     return existing;
+  }
+  const max = getMaxConcurrentGenerations();
+  if (inflight.size >= max) {
+    console.warn(`[CaseSummary] ${inflight.size} generations in flight (limit ${max}); serving field-based summary for report ${report.id}`);
+    return { summary: buildFallbackSummary(inputs, `summary model busy (${inflight.size} generations in flight, limit ${max}) — try again shortly`), cached: false };
+  }
+  if (force) {
+    if (forcedAt.size >= FORCED_AT_MAX) forcedAt.delete(forcedAt.keys().next().value as string);
+    forcedAt.set(report.id, now());
   }
   const timeoutMs = options.timeoutMs ?? CASE_SUMMARY_TIMEOUT_MS;
   // Hard outer deadline: even if something downstream never settles (a
@@ -537,6 +580,16 @@ export async function generateCaseSummary(
 }
 
 const inflight = new Map<string, Promise<GenerateCaseSummaryResult>>();
+/** report id → when a forced regeneration last started (bounded: pruned on each set). */
+const forcedAt = new Map<string, number>();
+const FORCED_AT_MAX = 500;
+let now: () => number = Date.now;
+
+/** Test helper: clear cooldown state / inject a clock. */
+export function _resetCaseSummaryThrottle(clock?: () => number): void {
+  forcedAt.clear();
+  now = clock ?? Date.now;
+}
 /** Extra time past the model timeout allowed for persistence before the in-flight entry is force-released. */
 const INFLIGHT_GRACE_MS = 10_000;
 

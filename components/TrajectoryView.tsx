@@ -52,9 +52,12 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
   };
 
   const isCollapsible = (step: TrajectoryStep): boolean => {
+    // `content` is optional on action steps (tool call with args only);
+    // reading `.length` on undefined blanked the whole inspector.
+    const len = typeof step.content === 'string' ? step.content.length : 0;
     return step.type === 'thinking' ||
-           (step.type === 'tool_result' && step.content.length > 100) ||
-           step.content.length > 200;
+           (step.type === 'tool_result' && len > 100) ||
+           len > 200;
   };
 
   const formatLabel = (step: TrajectoryStep): string => {
@@ -158,7 +161,7 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
                 {JSON.stringify(step.toolArgs, null, 2)}
               </pre>
             ) : (
-              <Markdown className="text-sm text-foreground/90">{step.content}</Markdown>
+              <Markdown className="text-sm text-foreground/90">{step.content ?? ''}</Markdown>
             )}
           </div>
         );

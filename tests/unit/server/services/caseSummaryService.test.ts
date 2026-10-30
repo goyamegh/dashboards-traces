@@ -55,6 +55,9 @@ import {
   truncateForSummary,
   CASE_SUMMARY_LIMITS,
   _resetCaseSummaryClient,
+  _resetCaseSummaryThrottle,
+  isCaseSummaryModelEnabled,
+  getMaxConcurrentGenerations,
 } from '@/server/services/caseSummaryService';
 import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
 import type { TestCase, TestCaseRun } from '@/types';
@@ -370,10 +373,16 @@ describe('caseSummaryService — prompt + parser', () => {
 });
 
 describe('caseSummaryService — generateCaseSummary (cache, invalidation, failures)', () => {
+  const ENV = { ...process.env };
   beforeEach(() => {
     jest.clearAllMocks();
     _resetCaseSummaryClient();
+    _resetCaseSummaryThrottle();
+    process.env = { ...ENV };
+    delete process.env.CASE_SUMMARY_ENABLED;
+    delete process.env.CASE_SUMMARY_MAX_CONCURRENT;
   });
+  afterAll(() => { process.env = { ...ENV }; });
 
   it('calls the model once, persists the summary with the inputs hash, and reuses it while inputs are unchanged', async () => {
     mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
@@ -443,7 +452,7 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
-  it('force=true bypasses a current cache but still joins a generation already running for the same inputs', async () => {
+  it('force=true bypasses a current cache once; a second force inside the cooldown is served from the cache (one paid call)', async () => {
     mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const report = passedReport();
     const { summary } = await generateCaseSummary(report, testCase(), {});
@@ -454,8 +463,17 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     resolveSend(llmReply(GOOD_REPLY));
     const [a, b] = await Promise.all([forcedA, forcedB]);
     expect(a.cached).toBe(false);
-    expect(b.cached).toBe(false);
-    expect(mockSend).toHaveBeenCalledTimes(2); // 1 initial + 1 shared forced regeneration
+    expect(b.cached).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(2); // 1 initial + 1 forced regeneration
+    // Without a cache to fall back on, the in-cooldown force joins the running generation.
+    _resetCaseSummaryThrottle();
+    mockSend.mockImplementationOnce(() => new Promise((r) => { resolveSend = r; }));
+    const c = generateCaseSummary(report, testCase(), { force: true });
+    const d = generateCaseSummary(report, testCase(), { force: true });
+    resolveSend(llmReply(GOOD_REPLY));
+    const [rc, rd] = await Promise.all([c, d]);
+    expect(rc.summary).toEqual(rd.summary);
+    expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
   it('the model cannot flip the verdict: a "PASSED" reason on a failed report still reads FAILED; an unjudged run stays "Not judged"', async () => {
@@ -548,6 +566,67 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     warn.mockRestore();
     expect(res.summary.source).toBe('llm');
     expect(res.summary.parts).toEqual(GOOD_PARTS);
+  });
+
+  it('CASE_SUMMARY_ENABLED=false: nothing is sent to the model; the field-based summary says why (and is not persisted)', async () => {
+    process.env.CASE_SUMMARY_ENABLED = 'false';
+    expect(isCaseSummaryModelEnabled()).toBe(false);
+    const persist = jest.fn();
+    const res = await generateCaseSummary(passedReport(), testCase(), { persist });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(res.summary.source).toBe('fallback');
+    expect(res.summary.error).toMatch(/disabled \(CASE_SUMMARY_ENABLED=false\)/);
+    expect(persist).not.toHaveBeenCalled();
+    // A current cached LLM summary is still served (nothing is sent either way).
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    delete process.env.CASE_SUMMARY_ENABLED;
+    const { summary } = await generateCaseSummary(passedReport(), testCase(), {});
+    process.env.CASE_SUMMARY_ENABLED = '0';
+    const cached = await generateCaseSummary({ ...passedReport(), caseSummary: summary }, testCase(), {});
+    expect(cached.cached).toBe(true);
+    for (const v of ['true', '', 'yes', 'anything']) { process.env.CASE_SUMMARY_ENABLED = v; expect(isCaseSummaryModelEnabled()).toBe(true); }
+    for (const v of ['false', '0', 'off', 'no', ' FALSE ']) { process.env.CASE_SUMMARY_ENABLED = v; expect(isCaseSummaryModelEnabled()).toBe(false); }
+  });
+
+  it('bounds concurrent model generations per process (CASE_SUMMARY_MAX_CONCURRENT, default 4): extra reports get the field-based summary', async () => {
+    expect(getMaxConcurrentGenerations()).toBe(4);
+    process.env.CASE_SUMMARY_MAX_CONCURRENT = '2';
+    const resolvers: Array<(v: any) => void> = [];
+    mockSend.mockImplementation(() => new Promise((r) => { resolvers.push(r); }));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = generateCaseSummary(passedReport({ id: 'r-a' }), testCase(), {});
+    const b = generateCaseSummary(passedReport({ id: 'r-b' }), testCase(), {});
+    const c = await generateCaseSummary(passedReport({ id: 'r-c' }), testCase(), {});
+    expect(c.summary.source).toBe('fallback');
+    expect(c.summary.error).toMatch(/busy \(2 generations in flight, limit 2\)/);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    resolvers.forEach(r => r(llmReply(GOOD_REPLY)));
+    await Promise.all([a, b]);
+    // Slots freed → the next one is generated.
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    const d = await generateCaseSummary(passedReport({ id: 'r-d' }), testCase(), {});
+    expect(d.summary.source).toBe('llm');
+    warn.mockRestore();
+    mockSend.mockReset();
+  });
+
+  it('a second forced regeneration of the same report within the cooldown serves the cache instead of paying again', async () => {
+    let t = 1_000_000;
+    _resetCaseSummaryThrottle(() => t);
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    const report = passedReport();
+    const first = await generateCaseSummary(report, testCase(), { force: true });
+    expect(first.cached).toBe(false);
+    const withCache = { ...report, caseSummary: first.summary };
+    t += 2_000;
+    const second = await generateCaseSummary(withCache, testCase(), { force: true });
+    expect(second.cached).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    t += 20_000;
+    mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
+    const third = await generateCaseSummary(withCache, testCase(), { force: true });
+    expect(third.cached).toBe(false);
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   it('wires the Bedrock client with the refreshing credential provider and passes the abort signal (#569)', async () => {

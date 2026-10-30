@@ -34,7 +34,7 @@ const LEGACY_USER_PREFIX = 'User: ';
  * low and no worse than the risk already accepted for the first step.
  */
 export function normalizeLegacyUserStep(step: TrajectoryStep): TrajectoryStep {
-  if (step.type === 'thinking' && step.content.startsWith(LEGACY_USER_PREFIX)) {
+  if (step.type === 'thinking' && typeof step.content === 'string' && step.content.startsWith(LEGACY_USER_PREFIX)) {
     return { ...step, type: 'user', content: step.content.slice(LEGACY_USER_PREFIX.length) };
   }
   return step;
