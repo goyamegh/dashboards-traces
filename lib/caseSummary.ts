@@ -46,7 +46,8 @@ export interface CaseSummaryInputs {
 
 /** Markdown → plain prose for a quoted snippet: fences dropped, emphasis/list/heading markers removed. */
 export function plainText(md: string): string {
-  return String(md || '')
+  const raw = String(md || '').slice(0, 20_000); // bound the work before any regex runs
+  const stripped = raw
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`([^`]*)`/g, '$1')
     .replace(/^\s{0,3}(?:[-*+]|\d+\.)\s+/gm, '')
@@ -54,6 +55,8 @@ export function plainText(md: string): string {
     .replace(/\*\*|__/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  // A code-only answer must not read as "no response": fall back to the raw text.
+  return stripped || raw.replace(/```/g, '').replace(/\s+/g, ' ').trim();
 }
 
 export function truncateForSummary(text: string | undefined | null, max: number): string {
@@ -106,35 +109,40 @@ function executedContent(testCase: TestCase | null | undefined, report: TestCase
   return { prompt: typeof prompt === 'string' ? prompt : '', expected: expected.filter((e: unknown) => typeof e === 'string') as string[] };
 }
 
-export function buildCaseSummaryInputs(report: TestCaseRun, testCase: TestCase | null | undefined): CaseSummaryInputs {
+type VerdictClass = Pick<CaseSummaryInputs, 'verdict' | 'notJudged'>;
+
+/**
+ * Pass / fail / not judged, from the report's own status fields (the repo
+ * rule "errors ⇒ no metrics" — `metricsStatus: 'error'` always wins).
+ */
+export function classifyVerdict(report: Pick<TestCaseRun, 'status' | 'metricsStatus' | 'failureStage' | 'passFailStatus' | 'traceError' | 'llmJudgeReasoning' | 'error' | 'agentError'>): VerdictClass {
   const stage = getFailureStage(report);
   const errored = report.metricsStatus === 'error' || stage === 'agent' || stage === 'judge' || stage === 'trace';
   const pending = !errored && (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating' || report.status === 'running');
   const hasVerdict = !errored && !pending && (report.passFailStatus === 'passed' || report.passFailStatus === 'failed');
-
-  let verdict: CaseSummaryInputs['verdict'] = 'not_judged';
-  let notJudged: CaseSummaryInputs['notJudged'];
-  if (hasVerdict) {
-    verdict = report.passFailStatus as 'passed' | 'failed';
-  } else if (pending) {
-    notJudged = { stage: 'pending', cause: report.metricsStatus === 'calculating' ? 'judgement in progress' : 'run still in progress' };
-  } else {
-    const cause = getFailureCause(report) || (report.status === 'failed' ? 'the run failed before a verdict was produced' : 'no verdict was recorded');
-    notJudged = { stage: stage ?? 'unknown', cause: truncateForSummary(cause, 300) };
+  if (hasVerdict) return { verdict: report.passFailStatus as 'passed' | 'failed' };
+  if (pending) {
+    return { verdict: 'not_judged', notJudged: { stage: 'pending', cause: report.metricsStatus === 'calculating' ? 'judgement in progress' : report.status === 'running' ? 'run still in progress' : 'waiting for traces' } };
   }
+  const cause = getFailureCause(report) || (report.status === 'failed' ? 'the run failed before a verdict was produced' : 'no verdict was recorded');
+  return { verdict: 'not_judged', notJudged: { stage: stage ?? 'unknown', cause: truncateForSummary(cause, 300) } };
+}
+
+export function buildCaseSummaryInputs(report: TestCaseRun, testCase: TestCase | null | undefined): CaseSummaryInputs {
+  const { verdict, notJudged } = classifyVerdict(report);
 
   const content = executedContent(testCase, report);
   return {
     testCaseName: truncateForSummary(testCase?.name, 160) || report.testCaseId,
     prompt: truncateForSummary(content.prompt, 1500),
-    expectedOutcomes: content.expected.map(e => truncateForSummary(e, 200)),
+    expectedOutcomes: content.expected.map(e => truncateForSummary(e, 200)).filter(Boolean),
     agentName: truncateForSummary(report.agentName, 160) || truncateForSummary(report.agentKey, 160) || 'the agent',
     toolsUsed: extractToolsUsed(report).slice(0, 12).map(t => truncateForSummary(t, 160)),
     stepCount: Array.isArray(report.trajectory) ? report.trajectory.length : 0,
     finalAnswer: truncateForSummary(plainText(extractFinalAnswer(report)), 1500),
     verdict,
     notJudged,
-    score: typeof report.score === 'number' ? report.score : undefined,
+    score: typeof report.score === 'number' && Number.isFinite(report.score) && report.score >= 0 && report.score <= 1 ? report.score : undefined,
     reasoning: verdict === 'not_judged' ? '' : truncateForSummary(getJudgeReasoningText(report), 1500),
   };
 }
@@ -167,7 +175,8 @@ function verdictReason(inputs: CaseSummaryInputs, report: TestCaseRun): string {
     // headings — on the RAW text (the bounded copy has its newlines collapsed).
     const sections = splitReasoningSections(getJudgeReasoningText(report));
     const pick = sections.find(sec => /summary|verdict|conclusion/i.test(sec.title)) || sections[0];
-    const body = (pick?.body || '').replace(/^\s*(?:\*\*[^*\n]+\*\*:?|#{1,4}\s[^\n]+)\s*/, '');
+    // Drop a leading heading LINE only (never a bold phrase that starts a sentence).
+    const body = (pick?.body || '').replace(/^\s*(?:\*\*[^*\n]+\*\*:?|#{1,4}\s[^\n]+)\s*(?:\n|$)/, '');
     const why = firstSentence(body || inputs.reasoning);
     if (why) return why;
   }
@@ -219,15 +228,18 @@ export function buildCaseSummary(report: TestCaseRun, testCase: TestCase | null 
   const asked = sentence(askedCore) + expect;
 
   let agent: string;
-  if (inputs.notJudged?.stage === 'agent' && !inputs.finalAnswer) {
+  if (!inputs.finalAnswer && inputs.stepCount === 0) {
     agent = sentence(`${inputs.agentName} produced no output`);
   } else {
     const tools = inputs.toolsUsed.length
       ? ` used ${inputs.toolsUsed.length === 1 ? 'the tool' : 'tools'} ${inputs.toolsUsed.slice(0, 4).join(', ')}${inputs.toolsUsed.length > 4 ? ` (+${inputs.toolsUsed.length - 4} more)` : ''} and`
       : '';
+    const steps = `${inputs.stepCount} recorded step${inputs.stepCount === 1 ? '' : 's'}`;
     const answer = inputs.finalAnswer
       ? ` answered: “${truncateForSummary(inputs.finalAnswer, 260)}”`
-      : ` finished ${inputs.stepCount} step${inputs.stepCount === 1 ? '' : 's'} without a final text response`;
+      : inputs.notJudged?.stage === 'pending'
+        ? ` has ${steps} and no final response yet`
+        : ` has ${steps} and no final text response`;
     agent = sentence(`${inputs.agentName}${tools}${answer}`);
   }
 
@@ -238,6 +250,6 @@ export function buildCaseSummary(report: TestCaseRun, testCase: TestCase | null 
 }
 
 /** True when there is a pass/fail verdict whose reason a model could word — unjudged runs need no model. */
-export function hasVerdictToExplain(report: Pick<TestCaseRun, 'metricsStatus' | 'failureStage' | 'status' | 'passFailStatus' | 'traceError' | 'llmJudgeReasoning'>): boolean {
-  return buildCaseSummaryInputs(report as TestCaseRun, null).verdict !== 'not_judged';
+export function hasVerdictToExplain(report: Parameters<typeof classifyVerdict>[0]): boolean {
+  return classifyVerdict(report).verdict !== 'not_judged';
 }

@@ -194,7 +194,7 @@ test.describe('Case TL;DR card — run inspector', () => {
     release();
     await expect(card(page)).toHaveAttribute('data-state', 'ready', { timeout: 10000 });
     await expect(card(page)).toHaveAttribute('data-source', 'llm');
-    await expect(page.getByTestId('case-tldr-source')).toContainText('AI verdict');
+    await expect(page.getByTestId('case-tldr-source')).toContainText('AI reason');
     await expect(page.getByTestId('case-tldr-source')).toContainText('claude-sonnet-4-5');
     await expect(page.getByTestId('case-tldr-verdict')).toHaveText('Judge verdict: PASSED (score 90%) — both expected outcomes were met, with only the exact start time missing.');
     await expect(page.getByTestId('case-tldr-verdict')).toHaveClass(/text-green/);
@@ -290,7 +290,7 @@ test.describe('Case TL;DR card — run inspector', () => {
     await page.locator(`[data-testid="test-case-row"][data-test-case-id="${s.tcFail}"]`).click();
     await expect(card(page)).toHaveAttribute('data-source', 'fallback', { timeout: 20000 });
     await expect(page.getByTestId('case-tldr-source')).toHaveText(/Field summary/);
-    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI verdict unavailable');
+    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI reason unavailable');
     await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: FAILED (score 30%) — Wrong service: the pool exhaustion comes from the orders service');
   });
 
@@ -300,7 +300,7 @@ test.describe('Case TL;DR card — run inspector', () => {
     await page.route('**/api/storage/runs/*/summary', (route) => route.fulfill({ status: 500, json: { error: 'storage exploded' } }));
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repPass}`);
     await expect(card(page)).toHaveAttribute('data-state', 'error', { timeout: 15000 });
-    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI verdict unavailable (storage exploded)');
+    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI reason unavailable (storage exploded)');
     await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: PASSED (score 90%) — The agent traced the 500s to the NullPointerException');
     await expect(page.getByTestId('case-tldr-skeleton')).toHaveCount(0);
     // Regenerate stays available as the retry affordance.

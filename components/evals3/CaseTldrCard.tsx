@@ -61,6 +61,9 @@ function judgementKey(report: EvaluationReport): string {
   ].join('|');
 }
 
+/** Client-side ceiling for the reason request (server deadline is 20 s + 10 s grace). */
+const CLIENT_TIMEOUT_MS = 45_000;
+
 function shortModel(model?: string): string | undefined {
   if (!model) return undefined;
   // "us.anthropic.claude-sonnet-4-5-20250929-v1:0" → "claude-sonnet-4-5"
@@ -84,14 +87,21 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, testCase, st
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
+      // The server gives up at its own deadline (~30 s); never leave the row
+      // "writing…" forever if the request itself stalls.
+      const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
       setStored({ kind: 'loading', key });
       try {
         const res = await fetchCaseSummary(report.id, { force, signal: controller.signal });
         if (controller.signal.aborted) return;
         setStored({ kind: 'ready', key, summary: res.summary, cached: res.cached });
-      } catch (err: any) {
-        if (controller.signal.aborted) return;
-        setStored({ kind: 'error', key, message: err?.message || 'Summary request failed' });
+      } catch (err: unknown) {
+        if (controller.signal.aborted && abortRef.current !== controller) return; // superseded by a newer request / unmount
+        const timedOut = controller.signal.aborted;
+        const message = timedOut ? `no answer within ${CLIENT_TIMEOUT_MS / 1000} s` : err instanceof Error ? err.message : 'Summary request failed';
+        setStored({ kind: 'error', key, message });
+      } finally {
+        clearTimeout(timer);
       }
     },
     // `key` folds in every judgement field we care about; report.id is part of it.
@@ -136,17 +146,17 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, testCase, st
           <Badge
             variant="secondary"
             className="text-[9px] px-1.5 py-0 gap-1 shrink-0"
-            title={`Verdict reason written by ${state.summary.model || 'the summary model'} · ${new Date(state.summary.generatedAt).toLocaleString()}`}
+            title={`The verdict is computed from the report; its reason was written by ${state.summary.model || 'the summary model'} · ${new Date(state.summary.generatedAt).toLocaleString()}`}
             data-testid="case-tldr-source"
           >
-            <Sparkles size={9} /> AI verdict{shortModel(state.summary.model) ? ` · ${shortModel(state.summary.model)}` : ''}
+            <Sparkles size={9} /> AI reason{shortModel(state.summary.model) ? ` · ${shortModel(state.summary.model)}` : ''}
           </Badge>
         )}
         {modelUnavailable && (
           <Badge
             variant="secondary"
             className="text-[9px] px-1.5 py-0 gap-1 shrink-0 bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30"
-            title={unavailableReason ? `AI verdict unavailable: ${unavailableReason}` : 'AI verdict unavailable'}
+            title={unavailableReason ? `AI reason unavailable: ${unavailableReason}` : 'AI reason unavailable'}
             data-testid="case-tldr-source"
           >
             <ListChecks size={9} /> Field summary
@@ -187,7 +197,7 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, testCase, st
         </dd>
         {modelUnavailable && (
           <dd className="col-span-2 text-[10px] text-muted-foreground italic" data-testid="case-tldr-fallback-note">
-            AI verdict unavailable{unavailableReason ? ` (${unavailableReason})` : ''} — showing the field-based reason.
+            AI reason unavailable{unavailableReason ? ` (${unavailableReason})` : ''} — showing the field-based reason.
           </dd>
         )}
       </dl>

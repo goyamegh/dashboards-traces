@@ -49,7 +49,7 @@ describe('buildCaseSummary — Asked / Agent', () => {
     expect(buildCaseSummary(report(), testCase({ expectedOutcomes: ['Names the orders service'] })).asked).toMatch(/Expected outcome: “Names the orders service”\.$/);
     expect(buildCaseSummary(report(), null).asked).toBe('The test “tc-1” has no recorded prompt.');
     expect(buildCaseSummary(report({ trajectory: [{ id: 's1', type: 'action', toolName: 'search_logs', timestamp: 1 } as any] }), testCase()).agent)
-      .toBe('Ops RCA agent used the tool search_logs and finished 1 step without a final text response.');
+      .toBe('Ops RCA agent used the tool search_logs and has 1 recorded step and no final text response.');
   });
   it('uses the test-case version the report ran against', () => {
     const tc = testCase({ initialPrompt: 'new prompt', currentVersion: 2, versions: [
@@ -63,6 +63,19 @@ describe('buildCaseSummary — Asked / Agent', () => {
     const md = 'The docs do not answer directly [1].\n\n- **Finding 1**: token expires at 02:00\n\n```json\n{"a":1}\n```';
     expect(buildCaseSummary(report({ trajectory: [{ id: 's1', type: 'response', content: md, timestamp: 1 } as any] }), testCase()).agent)
       .toBe('Ops RCA agent answered: “The docs do not answer directly [1]. Finding 1: token expires at 02:00”');
+  });
+
+  it('a code-only answer is quoted raw (never "no response"); an agent that made tool calls but gave no answer is not "no output"', () => {
+    expect(buildCaseSummary(report({ trajectory: [{ id: 's1', type: 'response', content: '```\nSELECT 1\n```', timestamp: 1 } as any] }), testCase()).agent).toBe('Ops RCA agent answered: “SELECT 1”');
+    const agentErrWithSteps = report({ status: 'failed', metricsStatus: 'error', failureStage: 'agent', passFailStatus: undefined, trajectory: [{ id: 's1', type: 'action', toolName: 'search_logs', timestamp: 1 } as any], error: 'timed out', llmJudgeReasoning: '' });
+    expect(buildCaseSummary(agentErrWithSteps, testCase()).agent).toBe('Ops RCA agent used the tool search_logs and has 1 recorded step and no final text response.');
+    const pendingNoAnswer = report({ metricsStatus: 'calculating', passFailStatus: undefined, trajectory: [{ id: 's1', type: 'action', toolName: 'search_logs', timestamp: 1 } as any] });
+    expect(buildCaseSummary(pendingNoAnswer, testCase()).agent).toBe('Ops RCA agent used the tool search_logs and has 1 recorded step and no final response yet.');
+    // A bold phrase that STARTS the judge's sentence is kept; only a heading line is dropped.
+    expect(buildCaseSummary(report({ passFailStatus: 'failed', llmJudgeReasoning: '**Not** acceptable because the rollback target was wrong. More.' }), testCase()).verdict)
+      .toBe('Judge verdict: FAILED (score 90%) — Not acceptable because the rollback target was wrong.');
+    expect(buildCaseSummaryInputs(report({ score: Number.NaN }), testCase()).score).toBeUndefined();
+    expect(buildCaseSummaryInputs(report(), testCase({ expectedOutcomes: ['', '  ', 'real'] })).expectedOutcomes).toEqual(['real']);
   });
 
   it('final response = last response/assistant step only', () => {

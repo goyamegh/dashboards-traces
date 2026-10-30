@@ -446,7 +446,13 @@ export async function generateCaseSummary(
   const inputs = buildCaseSummaryInputs(report, testCase);
   const inputsHash = hashCaseSummaryInputs(inputs);
 
-  // Coalesce FIRST: whatever the caller asked for, a generation already
+  // Unjudged runs (agent / judge / trace error, pending): the verdict sentence
+  // is fully deterministic ("Not judged: … — <cause>") — nothing for a model
+  // to add, so no call is made. Decided before any cache / in-flight lookup.
+  if (!hasVerdictToExplain(report)) {
+    return { summary: buildFallbackSummary(report, testCase, inputs), cached: false };
+  }
+  // Coalesce next: whatever the caller asked for, a generation already
   // running for exactly these inputs is the freshest possible answer — a
   // second "Regenerate" click joins it instead of getting the stale cache.
   const inflightKey = `${report.id}:${inputsHash}`;
@@ -461,12 +467,6 @@ export async function generateCaseSummary(
   const force = options.force === true && !(lastForced !== undefined && now() - lastForced < getForceCooldownMs());
   if (!force && isCaseSummaryCurrent(report.caseSummary, inputs)) {
     return { summary: report.caseSummary as CaseSummary, cached: true };
-  }
-  // Unjudged runs (agent / judge / trace error, pending): the verdict sentence
-  // is fully deterministic ("Not judged: … — <cause>") — nothing for a model
-  // to add, so no call is made.
-  if (!hasVerdictToExplain(report)) {
-    return { summary: buildFallbackSummary(report, testCase, inputs), cached: false };
   }
   if (!isCaseSummaryModelEnabled()) {
     return { summary: buildFallbackSummary(report, testCase, inputs, 'model summaries are disabled (CASE_SUMMARY_ENABLED=false)'), cached: false };
