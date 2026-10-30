@@ -10,20 +10,23 @@
  * the test explaining what the test is about, how the response was — a TL;DR
  * in 2–3 sentences all the way to the output and the judgment."
  *
+ * Hybrid design: ASKED and AGENT are deterministic and render on first paint;
+ * the VERDICT label is deterministic too and only its REASON is model-written
+ * (fetched lazily; unjudged runs never call the model).
+ *
  * Real-shaped fixture: one evaluation run with FIVE cases — a pass, a fail, a
  * judge error, an agent error, and a second case with the SAME NAME as the
  * pass (the card must key on the selected report, not the name). Scenarios:
  *
- *   1. held request  → skeleton is visible (never blocks the page), then the
- *      model-written text renders with the "AI summary" badge and the three
- *      labelled parts (Asked / Agent / Verdict), verdict toned by status.
- *   2. identical names → switching rows refetches and shows THAT report's text.
+ *   1. held request  → Asked/Agent already visible, verdict row shows the
+ *      deterministic sentence greyed as "writing the reason…" (never blocks the
+ *      page); then the model reason renders with the "AI verdict" badge.
+ *   2. identical names → switching rows shows THAT report's own text.
  *   3. regenerate     → sends force:true and re-renders.
- *   4. real route, no model → "Field summary" badge + honest "Auto summary
- *      unavailable" note; agent-error case reads "Not judged: the agent request
- *      failed — <cause>" (never a verdict, never zeros).
- *   5. request error  → the card says "Summary unavailable — …" instead of a
- *      skeleton forever.
+ *   4. real route, no model → "Field summary" badge + honest note for a judged
+ *      case; the agent-error case never calls the model and reads "Not judged:
+ *      the agent request failed — <cause>" (never a verdict, never zeros).
+ *   5. request error  → honest note, deterministic verdict stays visible.
  */
 
 import { test, expect } from './fixtures/test-fixtures';
@@ -40,10 +43,13 @@ type Seed = {
   repPass: string; repDup: string; repFail: string; repJudge: string; repAgent: string;
 };
 
-const llmSummary = (reportId: string, parts: { asked: string; agent: string; verdict: string }) => ({
+// What the server returns for a model-written reason: Asked/Agent are the
+// deterministic sentences (the card ignores them and renders its own copy),
+// the verdict carries the computed label + the model's reason.
+const llmSummary = (reportId: string, verdict: string) => ({
   summary: {
     source: 'llm',
-    parts,
+    parts: { asked: 'ignored by the card', agent: 'ignored by the card', verdict },
     model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
     generatedAt: new Date().toISOString(),
     inputsHash: `hash-${reportId.slice(-6)}`,
@@ -161,40 +167,38 @@ test.describe('Case TL;DR card — run inspector', () => {
   const card = (page: Page) => page.getByTestId('case-tldr');
   const reportIdOf = (route: Route) => decodeURIComponent(route.request().url().match(/\/runs\/([^/]+)\/summary/)![1]);
 
-  test('held request → skeleton; then the model summary renders as Asked / Agent / Verdict with the AI badge', async ({ page }) => {
+  test('held request → Asked/Agent instant, verdict greyed as writing; then the model reason renders with the AI badge', async ({ page }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     const s = seed!;
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     await page.route('**/api/storage/runs/*/summary', async (route) => {
       await gate; // hold the request: the page must not block on it
-      await route.fulfill({
-        json: llmSummary(reportIdOf(route), {
-          asked: 'The test asked the agent to find why checkout returns HTTP 500s since the 14:00 deploy.',
-          agent: 'The agent searched the logs, found the NullPointerException in DiscountCodeHandler from build 8812 and recommended rolling back.',
-          verdict: 'PASSED — both expected outcomes were met, with only the exact start time missing.',
-        }),
-      });
+      await route.fulfill({ json: llmSummary(reportIdOf(route), 'Judge verdict: PASSED (score 90%) — both expected outcomes were met, with only the exact start time missing.') });
     });
 
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repPass}`);
-    // Cold CI servers can take a while to paint the inspector the first time.
     await expect(card(page)).toBeVisible({ timeout: 30000 });
     await expect(card(page)).toHaveAttribute('data-state', 'loading');
-    await expect(page.getByTestId('case-tldr-skeleton')).toBeVisible();
-    // The rest of the inspector is usable while the summary is still loading.
+    // Deterministic rows are there before any request returns.
+    await expect(page.getByTestId('case-tldr-asked')).toContainText('The test asks: “Checkout returns HTTP 500 for 2% of requests since the 14:00 deploy. Find the root cause.” It has 2 expected outcomes');
+    await expect(page.getByTestId('case-tldr-agent')).toContainText('Example ops agent used the tool search_logs and answered: “Root cause: build 8812 introduced a null dereference in DiscountCodeHandler.');
+    // Verdict row: the deterministic label is already visible, marked as still writing.
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveAttribute('data-writing', 'true');
+    await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: PASSED (score 90%)');
+    await expect(page.getByTestId('case-tldr-skeleton')).toContainText('writing the reason…');
+    // The rest of the inspector is usable meanwhile.
     await expect(page.getByTestId('inspector-status-badge')).toHaveText('PASSED');
     await expect(page.getByText('Test Case Definition')).toBeVisible();
 
     release();
     await expect(card(page)).toHaveAttribute('data-state', 'ready', { timeout: 10000 });
     await expect(card(page)).toHaveAttribute('data-source', 'llm');
-    await expect(page.getByTestId('case-tldr-source')).toContainText('AI summary');
+    await expect(page.getByTestId('case-tldr-source')).toContainText('AI verdict');
     await expect(page.getByTestId('case-tldr-source')).toContainText('claude-sonnet-4-5');
-    await expect(page.getByTestId('case-tldr-asked')).toContainText('find why checkout returns HTTP 500s');
-    await expect(page.getByTestId('case-tldr-agent')).toContainText('NullPointerException in DiscountCodeHandler');
-    await expect(page.getByTestId('case-tldr-verdict')).toContainText('PASSED — both expected outcomes were met');
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveText('Judge verdict: PASSED (score 90%) — both expected outcomes were met, with only the exact start time missing.');
     await expect(page.getByTestId('case-tldr-verdict')).toHaveClass(/text-green/);
+    await expect(page.getByTestId('case-tldr-verdict')).not.toHaveAttribute('data-writing', 'true');
     await expect(page.getByTestId('case-tldr-fallback-note')).toHaveCount(0);
     // The card sits ABOVE the Test Case Definition header.
     const cardBox = await card(page).boundingBox();
@@ -202,29 +206,27 @@ test.describe('Case TL;DR card — run inspector', () => {
     expect(cardBox!.y).toBeLessThan(defBox!.y);
   });
 
-  test('two cases with the same name: switching rows shows the selected report\'s own summary', async ({ page }) => {
+  test('two cases with the same name: switching rows shows the selected report\'s own text', async ({ page }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     const s = seed!;
-    const texts: Record<string, string> = {
-      [s.repPass]: 'ASKED-PASS checkout 500s root cause.',
-      [s.repDup]: 'ASKED-DUP nightly report token rotation.',
-    };
     const requested: string[] = [];
     await page.route('**/api/storage/runs/*/summary', async (route) => {
       const id = reportIdOf(route);
       requested.push(id);
-      await route.fulfill({ json: llmSummary(id, { asked: texts[id] || `ASKED ${id}`, agent: `AGENT ${id}`, verdict: `VERDICT ${id}` }) });
+      await route.fulfill({ json: llmSummary(id, `Judge verdict: PASSED — reason for ${id}.`) });
     });
 
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repPass}`);
-    await expect(page.getByTestId('case-tldr-asked')).toHaveText(texts[s.repPass], { timeout: 15000 });
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(`Judge verdict: PASSED — reason for ${s.repPass}.`, { timeout: 15000 });
+    await expect(page.getByTestId('case-tldr-asked')).toContainText('Checkout returns HTTP 500');
 
     // Both rows carry the identical name; click the OTHER one.
     const dupRows = page.locator('[data-testid="test-case-row"]').filter({ hasText: DUP_NAME });
     await expect(dupRows).toHaveCount(2);
     await page.locator(`[data-testid="test-case-row"][data-test-case-id="${s.tcDup}"]`).click();
-    await expect(page.getByTestId('case-tldr-asked')).toHaveText(texts[s.repDup], { timeout: 15000 });
-    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(`VERDICT ${s.repDup}`);
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(`Judge verdict: PASSED — reason for ${s.repDup}.`, { timeout: 15000 });
+    await expect(page.getByTestId('case-tldr-asked')).toContainText('Why did the nightly report job fail after the 02:00 token rotation?');
+    await expect(page.getByTestId('case-tldr-agent')).toContainText('The scheduler token expires at 02:00');
     expect(requested).toContain(s.repPass);
     expect(requested).toContain(s.repDup);
   });
@@ -237,64 +239,69 @@ test.describe('Case TL;DR card — run inspector', () => {
     await page.route('**/api/storage/runs/*/summary', async (route) => {
       bodies.push(route.request().postDataJSON());
       n += 1;
-      await route.fulfill({ json: llmSummary(reportIdOf(route), { asked: `Asked v${n}.`, agent: `Agent v${n}.`, verdict: `FAILED — wrong service named (v${n}).` }) });
+      await route.fulfill({ json: llmSummary(reportIdOf(route), `Judge verdict: FAILED (score 30%) — wrong service named (v${n}).`) });
     });
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repFail}`);
     await expect(card(page)).toHaveAttribute('data-state', 'ready', { timeout: 15000 });
-    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(/^FAILED — wrong service named \(v\d+\)\.$/);
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(/^Judge verdict: FAILED \(score 30%\) — wrong service named \(v\d+\)\.$/);
     await expect(page.getByTestId('case-tldr-verdict')).toHaveClass(/text-red/);
-    // Initial loads never force (the inspector may mount the panel more than
-    // once on first paint; every one of those is a plain cached-or-generate ask).
     const initial = bodies.length;
     expect(initial).toBeGreaterThan(0);
     for (const b of bodies) expect(b).toEqual({ force: false });
 
     await page.getByTestId('case-tldr-regenerate').click();
-    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(`FAILED — wrong service named (v${initial + 1}).`, { timeout: 15000 });
+    await expect(page.getByTestId('case-tldr-verdict')).toHaveText(`Judge verdict: FAILED (score 30%) — wrong service named (v${initial + 1}).`, { timeout: 15000 });
     expect(bodies).toHaveLength(initial + 1);
     expect(bodies[initial]).toEqual({ force: true });
   });
 
-  test('real route without a model: honest field-based summary; agent error reads "Not judged" (never a verdict)', async ({ page, request }) => {
+  test('real route: unjudged cases never call the model; a judged case without model access shows the field-based reason honestly', async ({ page, request }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     const s = seed!;
-    // Probe the real route once; servers with model access answer `llm` and
-    // this test's fallback-specific assertions do not apply there.
-    const probe = await request.post(`/api/storage/runs/${s.repAgent}/summary`, { data: {} });
-    expect(probe.ok()).toBeTruthy();
-    const probeBody = await probe.json();
-    // Both paths must say the agent-error case was NOT judged.
-    expect(probeBody.summary.parts.verdict).toMatch(/not judged/i);
-    test.skip(probeBody.summary.source === 'llm', 'server has model access — fallback rendering is asserted where the model is unavailable (CI)');
-
+    // Agent error: deterministic end to end — no request at all.
+    const summaryCalls: string[] = [];
+    page.on('request', (r) => { if (r.url().includes('/summary')) summaryCalls.push(r.url()); });
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repAgent}`);
     await expect(card(page)).toHaveAttribute('data-state', 'ready', { timeout: 20000 });
-    await expect(card(page)).toHaveAttribute('data-source', 'fallback');
-    await expect(page.getByTestId('case-tldr-source')).toHaveText(/Field summary/);
-    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('Auto summary unavailable');
+    await expect(card(page)).toHaveAttribute('data-source', 'deterministic');
     await expect(page.getByTestId('case-tldr-asked')).toContainText('List the pods restarting in the payments namespace');
     await expect(page.getByTestId('case-tldr-agent')).toHaveText('Example ops agent produced no output.');
     await expect(page.getByTestId('case-tldr-verdict')).toContainText('Not judged: the agent request failed — Agent request timed out after 30012ms');
     await expect(page.getByTestId('case-tldr-verdict')).not.toContainText(/PASSED|FAILED|score 0/);
     await expect(page.getByTestId('case-tldr-verdict')).toHaveClass(/text-amber/);
+    await expect(page.getByTestId('case-tldr-source')).toHaveCount(0);
+    await expect(page.getByTestId('case-tldr-regenerate')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(summaryCalls).toHaveLength(0);
 
-    // Judge error: same honesty, judge stage named.
+    // Judge error: same honesty, judge stage named, still no model call.
     await page.locator(`[data-testid="test-case-row"][data-test-case-id="${s.tcJudge}"]`).click();
     await expect(page.getByTestId('case-tldr-verdict')).toContainText('Not judged: the judge could not produce a verdict', { timeout: 20000 });
     await expect(page.getByTestId('case-tldr-agent')).toContainText('answered: “The postmortem lists three action items');
+    await page.waitForTimeout(300);
+    expect(summaryCalls).toHaveLength(0);
 
-    // Failed verdict: verdict + first reason from the judge.
+    // Failed verdict: the route is called. Without model access it answers with the field-based reason.
+    const probe = await request.post(`/api/storage/runs/${s.repFail}/summary`, { data: {} });
+    expect(probe.ok()).toBeTruthy();
+    const probeBody = await probe.json();
+    expect(probeBody.summary.parts.verdict).toMatch(/^Judge verdict: FAILED \(score 30%\) — /);
+    test.skip(probeBody.summary.source === 'llm', 'server has model access — fallback rendering is asserted where the model is unavailable (CI)');
     await page.locator(`[data-testid="test-case-row"][data-test-case-id="${s.tcFail}"]`).click();
-    await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: FAILED (score 30%) — Wrong service: the pool exhaustion comes from the orders service', { timeout: 20000 });
+    await expect(card(page)).toHaveAttribute('data-source', 'fallback', { timeout: 20000 });
+    await expect(page.getByTestId('case-tldr-source')).toHaveText(/Field summary/);
+    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI verdict unavailable');
+    await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: FAILED (score 30%) — Wrong service: the pool exhaustion comes from the orders service');
   });
 
-  test('request failure → "Summary unavailable" message, not an endless skeleton', async ({ page }) => {
+  test('request failure → honest note; the deterministic verdict stays visible (no endless skeleton)', async ({ page }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     const s = seed!;
     await page.route('**/api/storage/runs/*/summary', (route) => route.fulfill({ status: 500, json: { error: 'storage exploded' } }));
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${s.repPass}`);
     await expect(card(page)).toHaveAttribute('data-state', 'error', { timeout: 15000 });
-    await expect(page.getByTestId('case-tldr-error')).toContainText('Summary unavailable — storage exploded');
+    await expect(page.getByTestId('case-tldr-fallback-note')).toContainText('AI verdict unavailable (storage exploded)');
+    await expect(page.getByTestId('case-tldr-verdict')).toContainText('Judge verdict: PASSED (score 90%) — The agent traced the 500s to the NullPointerException');
     await expect(page.getByTestId('case-tldr-skeleton')).toHaveCount(0);
     // Regenerate stays available as the retry affordance.
     await expect(page.getByTestId('case-tldr-regenerate')).toBeVisible();

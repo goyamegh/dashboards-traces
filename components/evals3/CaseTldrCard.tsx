@@ -8,24 +8,27 @@
  * in the run inspector: what the test asked → what the agent did → the
  * judgement and its main reason.
  *
- * Fetches `POST /api/storage/runs/:id/summary` lazily (the server caches the
- * model-written text on the report and regenerates it when the judgement
- * changes). While the request is in flight a skeleton is shown; the page is
- * never blocked. When the model is unavailable the server answers with a
- * deterministic field-based summary (`source: 'fallback'`) and the card says
- * so honestly instead of pretending it is an AI summary.
+ * Hybrid: ASKED and AGENT are computed here, instantly, from the report and
+ * test case (lib/caseSummary.ts). The VERDICT label is computed too; only
+ * its REASON is model-written — fetched lazily from
+ * `POST /api/storage/runs/:id/summary` (cached on the report, regenerated
+ * when the judgement changes). While that request is in flight the verdict
+ * row shows the deterministic sentence greyed as "writing…"; the page is
+ * never blocked. When the model is unavailable the deterministic verdict
+ * stays, with an honest note. Unjudged runs never call the model.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, RefreshCw, AlertTriangle, ListChecks } from 'lucide-react';
-import type { EvaluationReport, CaseSummary } from '@/types';
+import type { EvaluationReport, CaseSummary, TestCase } from '@/types';
 import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
 import { fetchCaseSummary } from '@/services/client/caseSummaryApi';
+import { buildCaseSummary, hasVerdictToExplain } from '@/lib/caseSummary';
 import type { ResultStatus } from './ResultStatus';
 
 interface CaseTldrCardProps {
   report: EvaluationReport;
+  testCase: TestCase | null;
   status: ResultStatus;
   className?: string;
 }
@@ -65,8 +68,11 @@ function shortModel(model?: string): string | undefined {
   return m ? m[0] : model.split('/').pop();
 }
 
-export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, className }) => {
+export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, testCase, status, className }) => {
   const key = judgementKey(report);
+  // Deterministic sentences — available on first paint, no request needed.
+  const det = buildCaseSummary(report, testCase);
+  const needsModel = hasVerdictToExplain(report);
   const [stored, setStored] = useState<CardState>({ kind: 'loading', key });
   // A state tagged with another report's key is never rendered — show the
   // skeleton until this report's own request settles.
@@ -94,9 +100,11 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, clas
   );
 
   useEffect(() => {
+    if (!needsModel) return; // unjudged: the verdict sentence is complete without a model
     void load(false);
     return () => abortRef.current?.abort();
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, needsModel]);
 
   const verdictTone =
     status === 'passed'
@@ -107,42 +115,50 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, clas
           ? 'text-amber-700 dark:text-amber-400'
           : 'text-foreground';
 
+  // What the verdict row shows: the model-written reason once it arrived,
+  // else the deterministic sentence (greyed while the model is still writing).
+  const verdictText = state.kind === 'ready' ? state.summary.parts.verdict : det.verdict;
+  const writing = needsModel && state.kind === 'loading';
+  const modelOk = state.kind === 'ready' && state.summary.source === 'llm';
+  const modelUnavailable = (state.kind === 'ready' && state.summary.source === 'fallback' && !!state.summary.error) || state.kind === 'error';
+  const unavailableReason = state.kind === 'error' ? state.message : state.kind === 'ready' ? state.summary.error : undefined;
+
   return (
     <div
       className={`border-b bg-card/60 shrink-0 px-4 py-2.5 ${className || ''}`}
       data-testid="case-tldr"
-      data-state={state.kind}
-      data-source={state.kind === 'ready' ? state.summary.source : undefined}
+      data-state={needsModel ? state.kind : 'ready'}
+      data-source={!needsModel ? 'deterministic' : state.kind === 'ready' ? state.summary.source : undefined}
     >
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">TL;DR</span>
-        {state.kind === 'ready' && state.summary.source === 'llm' && (
+        {modelOk && state.kind === 'ready' && (
           <Badge
             variant="secondary"
             className="text-[9px] px-1.5 py-0 gap-1 shrink-0"
-            title={`Written by ${state.summary.model || 'the summary model'} · ${new Date(state.summary.generatedAt).toLocaleString()}`}
+            title={`Verdict reason written by ${state.summary.model || 'the summary model'} · ${new Date(state.summary.generatedAt).toLocaleString()}`}
             data-testid="case-tldr-source"
           >
-            <Sparkles size={9} /> AI summary{shortModel(state.summary.model) ? ` · ${shortModel(state.summary.model)}` : ''}
+            <Sparkles size={9} /> AI verdict{shortModel(state.summary.model) ? ` · ${shortModel(state.summary.model)}` : ''}
           </Badge>
         )}
-        {state.kind === 'ready' && state.summary.source === 'fallback' && (
+        {modelUnavailable && (
           <Badge
             variant="secondary"
             className="text-[9px] px-1.5 py-0 gap-1 shrink-0 bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30"
-            title={state.summary.error ? `Auto summary unavailable: ${state.summary.error}` : 'Auto summary unavailable'}
+            title={unavailableReason ? `AI verdict unavailable: ${unavailableReason}` : 'AI verdict unavailable'}
             data-testid="case-tldr-source"
           >
             <ListChecks size={9} /> Field summary
           </Badge>
         )}
         <div className="flex-1" />
-        {state.kind !== 'loading' && (
+        {needsModel && !writing && (
           <button
             type="button"
             onClick={() => void load(true)}
             className="text-muted-foreground hover:text-foreground transition-colors"
-            title="Regenerate summary"
+            title="Regenerate the verdict reason"
             aria-label="Regenerate summary"
             data-testid="case-tldr-regenerate"
           >
@@ -151,36 +167,30 @@ export const CaseTldrCard: React.FC<CaseTldrCardProps> = ({ report, status, clas
         )}
       </div>
 
-      {state.kind === 'loading' && (
-        <div className="space-y-1.5" data-testid="case-tldr-skeleton" role="status" aria-label="Generating summary">
-          <Skeleton className="h-3 w-[92%]" />
-          <Skeleton className="h-3 w-[84%]" />
-          <Skeleton className="h-3 w-[70%]" />
-        </div>
-      )}
-
-      {state.kind === 'error' && (
-        <div className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400" data-testid="case-tldr-error">
-          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-          <span>Summary unavailable — {state.message}</span>
-        </div>
-      )}
-
-      {state.kind === 'ready' && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] leading-snug" data-testid="case-tldr-body">
-          <dt className="text-muted-foreground font-medium">Asked</dt>
-          <dd data-testid="case-tldr-asked">{state.summary.parts.asked}</dd>
-          <dt className="text-muted-foreground font-medium">Agent</dt>
-          <dd data-testid="case-tldr-agent">{state.summary.parts.agent}</dd>
-          <dt className="text-muted-foreground font-medium">Verdict</dt>
-          <dd className={`font-medium ${verdictTone}`} data-testid="case-tldr-verdict">{state.summary.parts.verdict}</dd>
-          {state.summary.source === 'fallback' && (
-            <dd className="col-span-2 text-[10px] text-muted-foreground italic" data-testid="case-tldr-fallback-note">
-              Auto summary unavailable{state.summary.error ? ` (${state.summary.error})` : ''} — showing a field-based summary.
-            </dd>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] leading-snug" data-testid="case-tldr-body">
+        <dt className="text-muted-foreground font-medium">Asked</dt>
+        <dd data-testid="case-tldr-asked">{det.asked}</dd>
+        <dt className="text-muted-foreground font-medium">Agent</dt>
+        <dd data-testid="case-tldr-agent">{det.agent}</dd>
+        <dt className="text-muted-foreground font-medium">Verdict</dt>
+        <dd
+          className={`font-medium ${writing ? 'text-muted-foreground' : verdictTone}`}
+          data-testid="case-tldr-verdict"
+          data-writing={writing ? 'true' : undefined}
+        >
+          {verdictText}
+          {writing && (
+            <span className="ml-2 text-[10px] font-normal italic text-muted-foreground" data-testid="case-tldr-skeleton" role="status" aria-label="Writing the verdict reason">
+              writing the reason…
+            </span>
           )}
-        </dl>
-      )}
+        </dd>
+        {modelUnavailable && (
+          <dd className="col-span-2 text-[10px] text-muted-foreground italic" data-testid="case-tldr-fallback-note">
+            AI verdict unavailable{unavailableReason ? ` (${unavailableReason})` : ''} — showing the field-based reason.
+          </dd>
+        )}
+      </dl>
     </div>
   );
 };

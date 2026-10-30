@@ -50,7 +50,7 @@ interface FakeBedrock {
   url: string;
   mode: FakeMode;
   calls: Array<{ authorization: string; modelPath: string; body: any }>;
-  nextParts: { asked: string; agent: string; why: string };
+  nextParts: { why: string };
   /** 'hold' mode: responders parked until release() is called. */
   held: Array<() => void>;
   release: () => void;
@@ -62,7 +62,7 @@ function startFakeBedrock(): Promise<FakeBedrock> {
     url: '',
     mode: 'ok',
     calls: [],
-    nextParts: { asked: 'a', agent: 'b', why: 'c' },
+    nextParts: { why: 'c' },
     held: [],
     release: () => { const h = fake.held; fake.held = []; h.forEach(fn => fn()); },
   };
@@ -177,18 +177,15 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
 
   it('1) first view: calls the model once through a SigV4-signed request and persists the LLM summary', async () => {
     fake.mode = 'ok';
-    fake.nextParts = {
-      asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
-      agent: 'The agent read the scheduler config and found the token expiring at 02:00, proposing automatic rotation.',
-      why: 'both expected outcomes were met',
-    };
+    fake.nextParts = { why: 'both expected outcomes were met' };
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(false);
     expect(res.body.summary.source).toBe('llm');
+    // Asked / Agent are deterministic (never model text); only the verdict's reason came from the model.
     expect(res.body.summary.parts).toEqual({
-      asked: fake.nextParts.asked,
-      agent: fake.nextParts.agent,
+      asked: 'The test asks: “Why does the nightly report job fail after the 02:00 rotation?” It has 2 expected outcomes, e.g. “Finds the expired token in the scheduler config”.',
+      agent: 'Example ops agent used the tool read_config and answered: “The scheduler token expires at 02:00; rotate it automatically before the job.”',
       verdict: 'Judge verdict: PASSED (score 85%) — both expected outcomes were met.',
     });
     expect(res.body.summary.inputsHash).toMatch(/^[0-9a-f]{16}$/);
@@ -239,7 +236,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(true);
-    expect(res.body.summary.parts.asked).toBe(fake.nextParts.asked);
+    expect(res.body.summary.parts.verdict).toContain('both expected outcomes were met');
     expect(fake.calls).toHaveLength(before);
   });
 
@@ -255,11 +252,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     });
     expect(patch.status).toBe(200);
 
-    fake.nextParts = {
-      asked: 'The test asked why the nightly report job fails after the 02:00 rotation.',
-      agent: 'The agent read the scheduler config and found the token expiring at 02:00.',
-      why: 'the proposed rotation would run after the job starts',
-    };
+    fake.nextParts = { why: 'the proposed rotation would run after the job starts' };
     const res = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(res.status).toBe(200);
     expect(res.body.cached).toBe(false);
@@ -291,7 +284,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
       }, 10);
     });
     await request(app).patch(`/api/storage/runs/${reportId}`).send({ llmJudgeReasoning: 'Reasoning v4 — landed during generation.' });
-    fake.nextParts = { asked: 'a', agent: 'b', why: 'written against v3' };
+    fake.nextParts = { why: 'written against v3' };
     fake.release();
     fake.mode = 'ok';
     const res = await pending;
@@ -303,7 +296,7 @@ describe('POST /api/storage/runs/:id/summary — case TL;DR (integration, real S
     const after = (await request(app).get(`/api/storage/runs/${reportId}`)).body.caseSummary;
     expect(after).toEqual(stored);
     const before = fake.calls.length;
-    fake.nextParts = { asked: 'a', agent: 'b', why: 'written against v4' };
+    fake.nextParts = { why: 'written against v4' };
     const next = await request(app).post(`/api/storage/runs/${reportId}/summary`).send({});
     expect(next.body.cached).toBe(false);
     expect(next.body.summary.parts.verdict).toContain('written against v4');

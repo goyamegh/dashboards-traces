@@ -22,10 +22,10 @@
  *      "5.7× over", chai text only inside the Raw disclosure, compact
  *      "Later checks did not run" row, heading reads "Checks".
  *   3. LLM judge reasoning split into sections (one per heading).
- *   4. Test Case Output: Answer first (Markdown rendered, fence present),
+ *   4. Test Case Output: Agent Response first (Markdown rendered, fence present),
  *      Rendered/Raw toggle, Steps collapsed by default and openable.
  *   5. Agent error: "Not judged — the agent request failed" headline and
- *      "No final answer".
+ *      "No agent response".
  */
 
 import { test, expect } from './fixtures/test-fixtures';
@@ -170,13 +170,14 @@ test.describe('Judge Evaluation + Test Case Output — readable failure', () => 
     await expect(sections.nth(1).getByText('Capping at 50', { exact: false })).toBeHidden();
   });
 
-  test('Test Case Output: answer first as Markdown with Rendered/Raw, steps collapsed below', async ({ page }) => {
+  test('Test Case Output: Agent Response first as Markdown with Rendered/Raw, steps collapsed below', async ({ page }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     await quietTldr(page);
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${seed!.repCost}`);
     const answer = page.getByTestId('final-answer');
     await expect(answer).toBeVisible({ timeout: 15000 });
     await expect(answer).toHaveAttribute('data-has-answer', 'true');
+    await expect(answer.locator('h4')).toContainText('Agent Response');
     const body = page.getByTestId('final-answer-body');
     await expect(body).toHaveAttribute('data-view', 'rendered');
     // Markdown really rendered: a <strong>, a list, and a code block — not literal `**`.
@@ -199,11 +200,11 @@ test.describe('Judge Evaluation + Test Case Output — readable failure', () => 
     await expect(body).toContainText('**Finding 1**');
   });
 
-  test('Agent error: Judge tab says Not judged; Test Case Output says no final answer', async ({ page }) => {
+  test('Agent error: Judge tab says Not judged; Test Case Output says no agent response', async ({ page }) => {
     test.skip(!seed, 'Could not seed run (storage unavailable)');
     await quietTldr(page);
     await page.goto(`/evaluations/runs/${RUN_ID}/inspect?reportId=${seed!.repAgent}`);
-    await expect(page.getByTestId('final-answer-none')).toContainText('No final answer', { timeout: 15000 });
+    await expect(page.getByTestId('final-answer-none')).toContainText('No agent response', { timeout: 15000 });
     await page.getByRole('tab', { name: /Judge Evaluation/ }).click();
     await expect(page.getByTestId('judgement-headline')).toHaveAttribute('data-tone', 'errored');
     await expect(page.getByTestId('judgement-headline-title')).toHaveText('Not judged — the agent request failed');

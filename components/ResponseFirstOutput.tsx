@@ -4,12 +4,12 @@
  */
 
 /**
- * ResponseFirstOutput — the Test Case Output tab, answer first.
+ * ResponseFirstOutput — the Test Case Output tab, Agent Response first.
  *
  * Owner feedback: "show the response first, and a collapsible for all other
  * messages later; all the text should be Markdown." So:
  *
- *   1. ANSWER — the agent's final `response` (else last `assistant`) step,
+ *   1. AGENT RESPONSE — the final `response` (else last `assistant`) step,
  *      always expanded, rendered as Markdown (code/JSON fences become real
  *      blocks) with a Rendered / Raw toggle that shows the exact string.
  *   2. STEPS — every trajectory step (tool calls, results, thinking, the
@@ -59,7 +59,7 @@ export const ResponseFirstOutput: React.FC<Props> = ({ steps, defaultStepsOpen =
       <section data-testid="final-answer" data-has-answer={answer ? 'true' : 'false'}>
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-sm font-semibold flex items-center gap-2">
-            <MessageSquareText size={14} className="text-muted-foreground" /> Answer
+            <MessageSquareText size={14} className="text-muted-foreground" /> Agent Response
             {answer && (
               <span className="text-xs font-normal text-muted-foreground">
                 {answer.content.length.toLocaleString()} chars · final {answer.type} step
@@ -67,7 +67,7 @@ export const ResponseFirstOutput: React.FC<Props> = ({ steps, defaultStepsOpen =
             )}
           </h4>
           {answer && (
-            <div className="flex items-center gap-1 bg-muted rounded-lg p-0.5" role="group" aria-label="Answer view">
+            <div className="flex items-center gap-1 bg-muted rounded-lg p-0.5" role="group" aria-label="Agent Response view">
               <button
                 type="button"
                 onClick={() => setRaw(false)}
@@ -99,7 +99,7 @@ export const ResponseFirstOutput: React.FC<Props> = ({ steps, defaultStepsOpen =
           </div>
         ) : (
           <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground" data-testid="final-answer-none">
-            No final answer — the agent produced no response step{total ? ` (${total} other step${total === 1 ? '' : 's'} below)` : ''}.
+            No agent response — the agent produced no response step{total ? ` (${total} other step${total === 1 ? '' : 's'} below)` : ''}.
           </div>
         )}
       </section>
@@ -115,7 +115,7 @@ export const ResponseFirstOutput: React.FC<Props> = ({ steps, defaultStepsOpen =
           {stepsOpen ? <ChevronDown size={14} className="text-muted-foreground" /> : <ChevronRight size={14} className="text-muted-foreground" />}
           Steps
           <span className="text-xs font-normal text-muted-foreground">
-            {total} step{total === 1 ? '' : 's'} — tool calls, results, thinking and the answer, in order
+            {total} step{total === 1 ? '' : 's'} — tool calls, results, thinking and the response, in order
           </span>
         </button>
         {stepsOpen && (

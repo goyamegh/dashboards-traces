@@ -99,7 +99,7 @@ export const TestCaseInspectorPanel: React.FC<TestCaseInspectorPanelProps> = ({
       {/* TL;DR — three sentences (asked → agent → verdict) above the
           definition so a reader gets the whole story of this case before
           opening the definition or the tabs. Lazy + cached server-side. */}
-      <CaseTldrCard report={report} status={status} />
+      <CaseTldrCard report={report} testCase={testCase} status={status} />
 
       {/* Reusable definition collapsible — same widget on both
           TestCaseDetailPage and RunInspectorPage so users get the
