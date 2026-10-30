@@ -37,7 +37,7 @@ describe('POST /api/storage/runs/:id/summary — 500 body is generic + correlate
     expect(JSON.stringify(res.body)).not.toContain('ECONNREFUSED');
     expect(JSON.stringify(res.body)).not.toContain('internal-cluster');
     const ref = res.body.error.match(/ref (cs-[a-z0-9-]+)/)![1];
-    const logged = error.mock.calls.map(c => c.join(' ')).join('\n');
+    const logged = error.mock.calls.map(c => c.map(x => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')).join('\n');
     expect(logged).toContain(ref);
     expect(logged).toContain('ECONNREFUSED internal-cluster.example:9200');
     error.mockRestore();

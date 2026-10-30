@@ -43,7 +43,6 @@ import {
 import { Badge } from '@/components/ui/badge';
 import {
   parseAssertionMessage,
-  checkTitle,
   isNotReachedMarker,
   formatNumber,
   formatRatio,
@@ -92,6 +91,11 @@ export const MatcherResultsPanel: React.FC<Props> = ({ results }) => {
   const notApplicableCount = results.filter(r => r.notApplicable && !r.notReached).length;
   const passed = reached.filter(r => r.pass).length;
   const failed = reached.length - passed;
+  // The not-reached marker carries the exception that stopped the test body.
+  // Usually that is a copy of the failing assertion's message (already shown
+  // on its row); when it is NOT — the body threw somewhere else — the marker
+  // is the only place the cause lives, so the row must show it inline.
+  const otherErrors = new Set(results.filter(r => !isNotReachedMarker(r)).map(r => r.errorMessage).filter(Boolean));
 
   return (
     <div>
@@ -106,7 +110,7 @@ export const MatcherResultsPanel: React.FC<Props> = ({ results }) => {
           r.method === 'llm-judge' && !r.notReached ? (
             <JudgeRow key={`${idx}-${r.description}`} result={r} />
           ) : (
-            <MatcherRow key={`${idx}-${r.description}`} result={r} />
+            <MatcherRow key={`${idx}-${r.description}`} result={r} distinctCause={isNotReachedMarker(r) && !!r.errorMessage && !otherErrors.has(r.errorMessage)} />
           )
         )}
       </div>
@@ -118,6 +122,8 @@ export const MatcherResultsPanel: React.FC<Props> = ({ results }) => {
 
 interface RowProps {
   result: MatcherResult;
+  /** Not-reached marker only: its error is not shown on any other row → show it inline. */
+  distinctCause?: boolean;
 }
 
 const PassIcon: React.FC<{ pass: boolean; notReached?: boolean }> = ({ pass, notReached }) =>
@@ -196,20 +202,21 @@ const IdChips: React.FC<{ ids: string[]; total?: number; goldSet?: Set<string>; 
   </span>
 );
 
-const MatcherRow: React.FC<RowProps> = ({ result }) => {
+const MatcherRow: React.FC<RowProps> = ({ result, distinctCause }) => {
   const idListsRaw = idListDetails(result.details);
   const idLists = idListsRaw && result.notApplicable ? { ...idListsRaw, notApplicable: true } : idListsRaw;
   // The runner's synthetic "later matchers never ran" marker is a note, not
-  // a check: one short line, no evidence (its message is a copy of the
-  // failing assertion's), raw text behind a disclosure.
+  // a check: one short line, raw text behind a disclosure — unless its error
+  // is the only record of why the body stopped (distinctCause).
   const notReached = isNotReachedMarker(result);
-  // Code-SDK assertions: the author's message ("<what was checked>: k=v (bar ≤ N) …")
-  // is the readable title and the evidence; the chai text ("false to equal
-  // true") moves into the raw disclosure.
+  // Code-SDK assertions: when the author's message is STRUCTURED ("<what was
+  // checked>: k=v (bar ≤ N) …") it is the readable title and the evidence,
+  // and the chai text ("false to equal true") moves into the raw disclosure.
+  // Anything the parser does not understand renders exactly as before.
   const parsed = useMemo(() => parseAssertionMessage(result.errorMessage), [result.errorMessage]);
-  const title = checkTitle(result);
-  const titleIsParsed = !notReached && title !== (result.description || '(check)');
-  const measurements = parsed.measurements;
+  const titleIsParsed = !notReached && parsed.structured && !!parsed.label;
+  const title = notReached ? 'Later checks did not run' : titleIsParsed ? parsed.label : (result.description || '(matcher)');
+  const measurements = parsed.structured ? parsed.measurements : [];
   const hasDetail =
     !!result.errorMessage ||
     !!result.reasoning ||
@@ -229,12 +236,20 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
             <span className="text-muted-foreground">{title}</span>
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground ml-2">not reached</span>
             <div className="text-xs text-muted-foreground mt-0.5">
-              The failing check above threw, so the rest of the test body never executed. To record every check even when one fails, use <code className="bg-muted px-1 py-0.5 rounded">expect.soft(...)</code>.
+              {distinctCause
+                ? 'The test body threw before reaching these checks. To record every check even when one fails, use '
+                : 'The failing check above threw, so the rest of the test body never executed. To record every check even when one fails, use '}
+              <code className="bg-muted px-1 py-0.5 rounded">expect.soft(...)</code>.
             </div>
+            {distinctCause && (
+              <div className="text-xs text-red-600 dark:text-red-400 mt-1 whitespace-pre-wrap" data-testid="check-not-reached-cause">
+                <span className="font-semibold">thrown:</span> {result.errorMessage}
+              </div>
+            )}
             <details className="mt-1 text-xs text-muted-foreground">
               <summary className="cursor-pointer select-none">Raw marker text</summary>
               <div className="mt-1 whitespace-pre-wrap">{result.description}</div>
-              {result.errorMessage && <div className="mt-1 whitespace-pre-wrap">error: {result.errorMessage}</div>}
+              {result.errorMessage && !distinctCause && <div className="mt-1 whitespace-pre-wrap">error: {result.errorMessage}</div>}
             </details>
           </div>
         </div>
@@ -347,6 +362,12 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
               <div className="mt-1 space-y-1">
                 <div><span className="font-semibold">assertion:</span> <code className="bg-muted px-1 py-0.5 rounded">{result.description}</code></div>
                 <div className="text-red-600 dark:text-red-400 whitespace-pre-wrap"><span className="font-semibold">error:</span> {result.errorMessage}</div>
+                {result.expected !== undefined && (
+                  <div><span className="font-semibold">expected:</span> <code className="bg-muted px-1 py-0.5 rounded">{formatValue(result.expected)}</code></div>
+                )}
+                {result.actual !== undefined && (
+                  <div><span className="font-semibold">actual:</span> <code className="bg-muted px-1 py-0.5 rounded">{formatValue(result.actual)}</code></div>
+                )}
               </div>
             </details>
           ) : (

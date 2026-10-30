@@ -452,7 +452,7 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
-  it('force=true bypasses a current cache once; a second force inside the cooldown is served from the cache (one paid call)', async () => {
+  it('force=true bypasses a current cache once; a concurrent second force JOINS the running regeneration (one paid call, fresh text for both)', async () => {
     mockSend.mockResolvedValueOnce(llmReply(GOOD_REPLY));
     const report = passedReport();
     const { summary } = await generateCaseSummary(report, testCase(), {});
@@ -460,10 +460,12 @@ describe('caseSummaryService — generateCaseSummary (cache, invalidation, failu
     mockSend.mockImplementationOnce(() => new Promise((r) => { resolveSend = r; }));
     const forcedA = generateCaseSummary({ ...report, caseSummary: summary }, testCase(), { force: true });
     const forcedB = generateCaseSummary({ ...report, caseSummary: summary }, testCase(), { force: true });
-    resolveSend(llmReply(GOOD_REPLY));
+    resolveSend(llmReply({ ...GOOD_REPLY, why: 'regenerated' }));
     const [a, b] = await Promise.all([forcedA, forcedB]);
     expect(a.cached).toBe(false);
-    expect(b.cached).toBe(true);
+    expect(b.cached).toBe(false);
+    expect(b.summary).toEqual(a.summary); // joined, not served the stale cache
+    expect(a.summary.parts.verdict).toContain('regenerated');
     expect(mockSend).toHaveBeenCalledTimes(2); // 1 initial + 1 forced regeneration
     // Without a cache to fall back on, the in-cooldown force joins the running generation.
     _resetCaseSummaryThrottle();

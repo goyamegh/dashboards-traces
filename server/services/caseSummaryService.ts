@@ -87,12 +87,17 @@ export function isCaseSummaryModelEnabled(): boolean {
  * unbounded Bedrock spend.
  */
 export function getMaxConcurrentGenerations(): number {
-  const n = Number(process.env.CASE_SUMMARY_MAX_CONCURRENT);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 4;
+  const n = Math.floor(Number(process.env.CASE_SUMMARY_MAX_CONCURRENT));
+  return Number.isFinite(n) && n >= 1 ? n : 4;
 }
 
-/** A forced regeneration of the same report within this window joins/reuses instead of paying again. */
-export const FORCE_COOLDOWN_MS = Number(process.env.CASE_SUMMARY_FORCE_COOLDOWN_MS) || 10_000;
+/** A forced regeneration of the same report within this window reuses the cache instead of paying again (0 disables). */
+export function getForceCooldownMs(): number {
+  const raw = process.env.CASE_SUMMARY_FORCE_COOLDOWN_MS;
+  if (raw === undefined || raw === '') return 10_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 10_000;
+}
 
 /**
  * Model used for summaries. Falls back to the judge's default Bedrock model so
@@ -529,10 +534,19 @@ export async function generateCaseSummary(
   const inputs = buildCaseSummaryInputs(report, testCase);
   const inputsHash = hashCaseSummaryInputs(inputs);
 
-  // A second "Regenerate" within the cooldown is treated as a plain view:
-  // the cached summary (if current) is served, no second paid call.
+  // Coalesce FIRST: whatever the caller asked for, a generation already
+  // running for exactly these inputs is the freshest possible answer — a
+  // second "Regenerate" click joins it instead of getting the stale cache.
+  const inflightKey = `${report.id}:${inputsHash}`;
+  const existing = inflight.get(inflightKey);
+  if (existing) {
+    debug('CaseSummary', `joining in-flight summary for report ${report.id}`);
+    return existing;
+  }
+  // A further "Regenerate" within the cooldown (after the previous one has
+  // finished) is treated as a plain view: the cached summary is served.
   const lastForced = forcedAt.get(report.id);
-  const force = options.force === true && !(lastForced !== undefined && now() - lastForced < FORCE_COOLDOWN_MS);
+  const force = options.force === true && !(lastForced !== undefined && now() - lastForced < getForceCooldownMs());
   if (!force && isCaseSummaryCurrent(report.caseSummary, inputs)) {
     return { summary: report.caseSummary as CaseSummary, cached: true };
   }
@@ -545,18 +559,13 @@ export async function generateCaseSummary(
   // the same case, and a user can click Regenerate twice — one model call
   // serves them all (`force` bypasses the PERSISTED cache, not a generation
   // that is already running for exactly these inputs).
-  const inflightKey = `${report.id}:${inputsHash}`;
-  const existing = inflight.get(inflightKey);
-  if (existing) {
-    debug('CaseSummary', `joining in-flight summary for report ${report.id}`);
-    return existing;
-  }
   const max = getMaxConcurrentGenerations();
   if (inflight.size >= max) {
     console.warn(`[CaseSummary] ${inflight.size} generations in flight (limit ${max}); serving field-based summary for report ${report.id}`);
     return { summary: buildFallbackSummary(inputs, `summary model busy (${inflight.size} generations in flight, limit ${max}) — try again shortly`), cached: false };
   }
   if (force) {
+    forcedAt.delete(report.id); // re-insert so the Map keeps true LRU order
     if (forcedAt.size >= FORCED_AT_MAX) forcedAt.delete(forcedAt.keys().next().value as string);
     forcedAt.set(report.id, now());
   }

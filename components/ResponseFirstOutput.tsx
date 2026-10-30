@@ -45,9 +45,12 @@ export function findFinalAnswerStep(steps: TrajectoryStep[] | undefined): Trajec
   return undefined;
 }
 
+/** Answers above this size start in Raw (a huge Markdown tree is slow to lay out); the toggle still works. */
+export const RENDER_MARKDOWN_MAX_CHARS = 60_000;
+
 export const ResponseFirstOutput: React.FC<Props> = ({ steps, defaultStepsOpen = false }) => {
   const answer = useMemo(() => findFinalAnswerStep(steps), [steps]);
-  const [raw, setRaw] = useState(false);
+  const [raw, setRaw] = useState(() => (answer?.content.length ?? 0) > RENDER_MARKDOWN_MAX_CHARS);
   const [stepsOpen, setStepsOpen] = useState(defaultStepsOpen);
   const total = Array.isArray(steps) ? steps.length : 0;
 
