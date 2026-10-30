@@ -38,7 +38,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { EvaluationReport, RunAnnotation, TestCase, TestCasePerformanceMetrics, Span, TimeRange, TraceMetrics, Evaluator } from '@/types';
 import { fetchRunMetrics, formatCost, formatDuration, formatTokens } from '@/services/metrics';
-import { TrajectoryView } from './TrajectoryView';
+import { ResponseFirstOutput } from './ResponseFirstOutput';
 import { RawEventsPanel } from './RawEventsPanel';
 import { MatcherResultsPanel } from './MatcherResultsPanel';
 import { VerdictSummary } from './judge/VerdictSummary';
@@ -60,6 +60,7 @@ import { tracePollingManager } from '@/services/traces/tracePoller';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
 import { getResultStatus as getSharedResultStatus, StatusIcon as SharedStatusIcon, StatusLabel as SharedStatusLabel, getErrorStage } from '@/components/evals3/ResultStatus';
 import { RunFailureCard } from '@/components/evals3/RunFailureCard';
+import { JudgementHeadline } from '@/components/judge/JudgementHeadline';
 import { getFailureStage } from '@/lib/reportFailure';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -908,9 +909,10 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
               </div>
             </div>
 
-            {/* Conditional View */}
+            {/* Conditional View — answer first (Markdown, Rendered/Raw), then
+                every step in a collapsible (owner feedback). */}
             {trajectoryViewMode === 'processed' ? (
-              <TrajectoryView steps={trajectory} loading={false} />
+              <ResponseFirstOutput steps={trajectory} />
             ) : (
               report.rawEvents && report.rawEvents.length > 0 ? (
                 <RawEventsPanel events={report.rawEvents} />
@@ -1121,6 +1123,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 {(liveReport.judgementRetryCount ?? 0) > 1 ? ` (retry #${liveReport.judgementRetryCount})` : ''}
               </p>
             )}
+            {/* Headline FIRST: the verdict, what decided it, and which check
+                failed with its measured-vs-limit evidence — built from the
+                report's own fields (lib/judgement/checks.ts). */}
+            <JudgementHeadline report={liveReport} />
+
             {/* Verdict — what the canonical verdict engine decided and how
                 (policy, LLM's own verdict, conflict, unevaluable rubrics), or
                 the explicit "no metrics" state for a judge error. Reads only

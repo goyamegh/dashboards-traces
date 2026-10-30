@@ -266,6 +266,9 @@ export function getIndexMappings(): IndexMappings {
             },
           },
           trajectory: { type: 'object', enabled: false },
+          // Cached case TL;DR (lib: server/services/caseSummaryService.ts).
+          // Opaque blob — read back via _source only, never filtered on.
+          caseSummary: { type: 'object', enabled: false },
           logs: { type: 'object', enabled: false },
           rawEvents: { type: 'object', enabled: false },
           improvementStrategies: { type: 'object', enabled: false },
