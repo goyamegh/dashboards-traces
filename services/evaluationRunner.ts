@@ -59,14 +59,13 @@ import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/jud
 import { describeAgentError, agentErrorContextFrom } from '@/services/evaluation/agentFailure';
 import { buildCancelledMarkers } from '@/services/evaluationRunFinalize';
 import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity, buildSdkJudgeIdentityPatch, assertJudgeIdentityConsistent, JUDGE_PROVIDER_NONE } from '@/lib/judgeIdentity';
-import { loadConfigSync } from '@/lib/config/index';
-import { getBackendUrl } from '@/lib/portConfig';
-import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getCustomAgents } from '@/server/services/customAgentStore';
 import { reportProvenanceFrom } from '@/server/services/agentProvenance';
+import { serverRunnerDeps, type RunnerDeps } from './runnerDeps';
+import { mintReportId } from './runSink';
 import { debug } from '@/lib/debug';
 import { tracePollingManager } from './traces/tracePoller';
 import { fetchSpansForRun, type TraceWindowAgent } from './traces/fetchSpansForRun';
+import type { TracesClient } from './traces/index';
 import { CancellationToken, createCancellationToken } from './benchmarkRunner';
 
 export type { CancellationToken } from './benchmarkRunner';
@@ -81,10 +80,22 @@ export interface EvaluationRunProgress {
   status: 'running' | 'completed' | 'failed' | 'cancelled';
 }
 
-export interface ExecuteEvaluationRunOptions {
+export interface ExecuteEvaluationRunOptions extends Partial<RunnerDeps> {
   cancellationToken?: CancellationToken;
-  storageModule: IStorageModule;
+  /**
+   * @deprecated Pass `sink` (a `LocalRunSink` over this module for
+   * server-executed runs) and the other `RunnerDeps`. Kept for existing
+   * callers: when `sink` is absent a `LocalRunSink` is built over this module,
+   * and any other missing dependency is resolved from the server process
+   * (`serverRunnerDeps`). The runner itself never touches this module.
+   */
+  storageModule?: IStorageModule;
   onProgress: (progress: EvaluationRunProgress) => void;
+  /**
+   * Notification that a case's verdict has been persisted (through the sink).
+   * Persistence itself is the runner's job — this hook only observes it
+   * (e.g. to stream an SSE event).
+   */
   onTestCaseComplete?: (testCaseId: string, result: {
     reportId: string;
     status: RunResultStatus;
@@ -107,14 +118,28 @@ export interface ExecuteEvaluationRunOptions {
 }
 
 /**
- * Safely load config with fallback to defaults.
+ * Explicit dependencies. Two accepted forms, never a mix:
+ *   - `sink` given → EVERY dependency must be given. A sink that writes
+ *     elsewhere (another server) must not silently judge or read traces via
+ *     THIS process's self-calls, so a partial set fails fast.
+ *   - legacy `storageModule` only → a `LocalRunSink` over it, with the other
+ *     dependencies resolved from the server process (`serverRunnerDeps`);
+ *     `agents`/`models` may still be passed explicitly (a route passing what
+ *     it just reloaded).
  */
-function getConfig() {
-  try {
-    return loadConfigSync();
-  } catch {
-    return DEFAULT_CONFIG;
+function resolveRunnerDeps(options: ExecuteEvaluationRunOptions): RunnerDeps {
+  const { sink, agents, models, judge, traces, storageModule } = options;
+  if (sink) {
+    const missing = (['agents', 'models', 'judge', 'traces'] as const).filter((k) => !options[k]);
+    if (missing.length) {
+      throw new Error(`executeEvaluationRun: options.sink was given, so every runner dependency must be explicit — missing: ${missing.join(', ')}`);
+    }
+    return { sink, agents: agents!, models: models!, judge: judge!, traces: traces! };
   }
+  if (!storageModule) {
+    throw new Error('executeEvaluationRun: options.sink is required (or the legacy options.storageModule)');
+  }
+  return serverRunnerDeps(storageModule, { agents, models, judge, traces });
 }
 
 /**
@@ -152,7 +177,9 @@ export async function executeEvaluationRun(
   testCases: TestCase[],
   options: ExecuteEvaluationRunOptions
 ): Promise<EvaluationRun> {
-  const { cancellationToken, storageModule, onProgress, onTestCaseComplete, evaluateFnMap, hooksByFile, testHookScopes } = options;
+  const { cancellationToken, onProgress, onTestCaseComplete, evaluateFnMap, hooksByFile, testHookScopes } = options;
+  const deps = resolveRunnerDeps(options);
+  const { sink } = deps;
   // Fresh judge verdict cache per run — content-addressed caching is safe
   // within a run (evaluator is fixed) but could serve stale verdicts across
   // runs if an evaluator was edited in a long-lived server process.
@@ -164,9 +191,7 @@ export async function executeEvaluationRun(
   console.log(`[EvaluationRunner] Starting run ${run.id} with concurrency=${concurrency} for ${totalTestCases} test cases`);
 
   // Build agent config
-  const config = getConfig();
-  const allAgents = [...config.agents, ...getCustomAgents()];
-  const baseAgent = allAgents.find(a => a.key === run.agentKey);
+  const baseAgent = deps.agents.find(a => a.key === run.agentKey);
 
   if (!baseAgent) {
     throw new Error(`Agent not found: ${run.agentKey}`);
@@ -185,7 +210,7 @@ export async function executeEvaluationRun(
   // never a user-selected run.modelId. `run.modelId` is only a backward-compat
   // fallback for runs created before the agent-model concept was removed.
   const effectiveModelId = resolveAgentModel(baseAgent, run.modelId);
-  const modelConfig = config.models[effectiveModelId];
+  const modelConfig = deps.models[effectiveModelId];
   const bedrockModelId = modelConfig?.model_id || effectiveModelId;
 
   // Agent-configuration provenance mirrored from the run onto every report
@@ -269,9 +294,9 @@ export async function executeEvaluationRun(
     // (`services/evaluationRunFinalize.ts`) merges any missing entries from
     // the in-memory map into the doc at the end, so nothing is lost.
     const persistResult = async (testCaseId: string): Promise<void> => {
-      if (!onTestCaseComplete) return;
       try {
-        await onTestCaseComplete(testCaseId, run.results[testCaseId]);
+        await sink.setCaseResult(run.id, testCaseId, run.results[testCaseId]);
+        await onTestCaseComplete?.(testCaseId, run.results[testCaseId]);
       } catch (persistErr) {
         const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
         console.warn(`[EvaluationRunner] [${testCaseId}] Failed to persist result (verdict kept in memory; finalization will reconcile): ${msg}`);
@@ -315,9 +340,13 @@ export async function executeEvaluationRun(
         // Best-effort: a storage failure here must not abort the run, so
         // we swallow the error and fall back to the post-completion
         // `runs.create()` below (which is what the runner did historically).
+        // The report id is minted HERE (not by storage) so every write for
+        // this case — placeholder, final report, trace-judged patch — is
+        // idempotent on the same id through whatever sink persists it.
+        const reportId = mintReportId();
         let placeholderRunId: string | undefined;
         try {
-          const placeholder = await storageModule.runs.create({
+          const placeholder = await sink.upsertCaseReport({ runId: run.id, testCaseId, attempt: 1, reportId, report: {
             // status / metricsStatus mirror what /api/evaluate persists so
             // the runs list filter `status=running` finds this row.
             status: 'running',
@@ -356,8 +385,8 @@ export async function executeEvaluationRun(
             metrics: {},
             llmJudgeReasoning: '',
             timestamp: new Date().toISOString(),
-          } as any);
-          placeholderRunId = placeholder.id;
+          } as any });
+          placeholderRunId = placeholder.reportId;
           debug('EvaluationRunner', `[${testCaseId}] Pre-persisted placeholder run: ${placeholderRunId}`);
         } catch (placeholderErr: any) {
           // Storage may not be configured / may be transiently unavailable.
@@ -507,7 +536,7 @@ export async function executeEvaluationRun(
                     endedAt: Date.now() + 60_000,
                   }]
                 : undefined;
-              loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined, traceWindow);
+              loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined, traceWindow, deps.traces);
               // Expose traces on the result too (RFC 004 §4.6) so the body
               // can read `result.traces.*` in addition to the `traces` fixture.
               (evalResult as any).traces = loadedTraces;
@@ -565,7 +594,7 @@ export async function executeEvaluationRun(
                 // serverUrl explicitly stops the SDK judge from re-deriving
                 // (and possibly defaulting to 4001 / a foreign instance) if
                 // env is ever mutated mid-run. See AGENTS.md → server lifecycle.
-                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId, serverUrl: getBackendUrl() }),
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId, transport: deps.judge }),
                 evaluate: evaluateFixture,
               };
               const arg = Object.assign(emptyResult, { ...fixtures, result: emptyResult }) as any;
@@ -715,6 +744,7 @@ export async function executeEvaluationRun(
                 // on the child report via the saveReport patch below.
                 judgeModelId: run.judgeModelId,
                 skipJudge: false,
+                judge: deps.judge,
               }
             );
             report = caseSpanContext
@@ -760,19 +790,15 @@ export async function executeEvaluationRun(
           // Provenance mirror (see `reportProvenance` above). Stamped on the
           // report too so the create-fallback path (no placeholder) carries it.
           Object.assign(report as any, reportProvenance);
-          let savedReport: EvaluationReport;
-          if (placeholderRunId) {
-            // Mirror saveReportWithModule's update shape: pass the report
-            // fields plus the placeholder id so storage merges in place.
-            // We exclude `id` from the spread so the placeholder's id wins.
-            const { id: _ignored, ...reportFields } = report as any;
-            savedReport = (await storageModule.runs.update(
-              placeholderRunId,
-              reportFields as any,
-            )) as any;
-          } else {
-            savedReport = await storageModule.runs.create(report as any);
-          }
+          // Same id as the placeholder: the sink merges into the existing
+          // document (the running-row -> completed-row transition is
+          // observable in place), or creates it when the placeholder write
+          // failed. `id` is excluded from the fields so the minted id wins.
+          const { id: _ignored, ...reportFields } = report as any;
+          const saved = await sink.upsertCaseReport({
+            runId: run.id, testCaseId, attempt: 1, reportId, report: reportFields,
+          });
+          const savedReport: EvaluationReport = saved.report;
 
           // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
           // Skipped for deterministic runs (matcher session decided the verdict already).
@@ -803,7 +829,7 @@ export async function executeEvaluationRun(
             savedReport.metricsStatus === 'pending'
           ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId ?? 'none — window/session correlation'})`);
-            judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig, (judgeModel, judgeProvider) => {
+            judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, run.id, deps, agentConfig, (judgeModel, judgeProvider) => {
               noteJudgeModel(judgeModel);
               noteJudgeProvider(judgeProvider);
             });
@@ -884,7 +910,7 @@ export async function executeEvaluationRun(
           // list doesn't show a permanently-running row after a crash.
           if (placeholderRunId) {
             try {
-              await storageModule.runs.update(placeholderRunId, {
+              await sink.patchCaseReport(run.id, placeholderRunId, {
                 status: 'failed',
                 metricsStatus: 'error',
                 llmJudgeReasoning: `Evaluation error: ${errorMsg}`,
@@ -1015,10 +1041,12 @@ export async function executeEvaluationRun(
 async function waitForTracesAndJudge(
   report: EvaluationReport,
   testCase: TestCase,
-  storage: IStorageModule,
+  runId: string,
+  deps: RunnerDeps,
   agentConfig: AgentConfig,
   onJudgeModel?: (judgeModel: string | undefined, judgeProvider: string | undefined) => void
 ): Promise<PassFailStatus | null> {
+  const { sink } = deps;
   return new Promise<PassFailStatus | null>((resolve) => {
     tracePollingManager.startPolling(
       report.id,
@@ -1033,8 +1061,7 @@ async function waitForTracesAndJudge(
             // Span-built trajectory (hook or default conversion — issue #320).
             const finalTrajectory = updatedReport.trajectory;
 
-            const config = getConfig();
-            const modelConfig = config.models[report.modelId || ''];
+            const modelConfig = deps.models[report.modelId || ''];
             // Trace-mode polled judge — same priority chain as the
             // standard path: report.judgeModelId (persisted on the run
             // doc) > BEDROCK_MODEL_ID env > agent's modelId (last-resort
@@ -1061,7 +1088,8 @@ async function waitForTracesAndJudge(
               // Strategy C correlation hints (#264) so the agent trace
               // judge tool can find spans the agent emits under its OWN
               // correlation, not just spans matching agent-health's runId.
-              buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
+              buildJudgeAgentsHints(report, agentConfig?.traceServiceName),
+              { transport: deps.judge }
             );
 
             const identity = buildJudgeIdentityPatch(judgment, judgeModelId);
@@ -1103,7 +1131,7 @@ async function waitForTracesAndJudge(
                 ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
               },
             };
-            await storage.runs.update(report.id, judgedUpdate as any);
+            await sink.patchCaseReport(runId, report.id, judgedUpdate as any);
             // Runtime guard: an LLM judge ran here, so a resolved model MUST
             // have been recorded (warns, never throws -- lib/judgeIdentity).
             assertJudgeIdentityConsistent({ id: report.id, judgeModelId, ...judgedUpdate } as any);
@@ -1117,7 +1145,7 @@ async function waitForTracesAndJudge(
             resolve(judgment.passFailStatus);
           } catch (error) {
             console.error(`[EvaluationRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
-            await storage.runs.update(report.id, buildEvaluatorErrorPatch(
+            await sink.patchCaseReport(runId, report.id, buildEvaluatorErrorPatch(
               'judge_failed',
               error,
               { judgeError: judgeErrorDetailFrom(error) },
@@ -1133,7 +1161,7 @@ async function waitForTracesAndJudge(
           resolve(null); // Don't fail the whole run — report already has error status from tracePoller
         },
       },
-      { agentConfig }
+      { agentConfig, tracesClient: deps.traces }
     );
   });
 }
@@ -1283,7 +1311,8 @@ function buildEvalResult(input: {
 async function loadTracesAccessor(
   agentConfig: AgentConfig,
   runId: string | undefined,
-  windowAgents?: TraceWindowAgent[]
+  windowAgents: TraceWindowAgent[] | undefined,
+  tracesClient: TracesClient
 ): Promise<TracesAccessor> {
   if (!agentConfig.useTraces) {
     return emptyTracesAccessor();
@@ -1299,6 +1328,7 @@ async function loadTracesAccessor(
     maxAttempts: polling.maxAttempts,
     intervalMs: polling.intervalMs,
     windowAgents,
+    tracesClient,
   });
   if (result.spans.length === 0) {
     const target = runId ? `runId=${runId}` : 'service-name window';
